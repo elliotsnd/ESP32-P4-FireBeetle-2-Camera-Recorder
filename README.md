@@ -12,52 +12,227 @@ Records H.264 video with PDM microphone audio to AVI files on SD card.
 - **AVI container** output to SD card (~5 FPS write throughput)
 - **Auto-focus** via DW9807 VCM
 
-## Hardware
+---
 
-- **FireBeetle 2 ESP32-P4** (DFRobot)
-- **Raspberry Pi Camera Module 3** (IMX708 + DW9807 VCM)
-- **MicroSD card** (FAT32)
-- **PDM microphone** on GPIO 46/47
+## Complete Setup Guide (Beginner-Friendly)
+
+This guide assumes you're on **Windows** and have never used ESP-IDF before. Follow every step in order.
+
+---
+
+### Step 1: Buy the Hardware
+
+You need all of these:
+
+| Part | Notes |
+|------|-------|
+| **FireBeetle 2 ESP32-P4** | Made by DFRobot. Has the ESP32-P4 chip with built-in H.264 encoder. |
+| **Raspberry Pi Camera Module 3** | The standard (non-wide) version. Uses IMX708 sensor + DW9807 autofocus motor. Connects via 22-pin FPC cable. |
+| **22-pin to 15-pin FPC adapter cable** | The FireBeetle 2 has a 22-pin MIPI CSI connector. The RPi Camera 3 has a 15-pin connector. You need an adapter cable (sometimes included with the board). |
+| **MicroSD card** | Any size, must be formatted as **FAT32**. Class 10 or faster recommended. |
+| **PDM microphone breakout** | Any MEMS PDM mic module (e.g., INMP441, SPH0645). Connect CLK to GPIO 46, DATA to GPIO 47. **Optional** — the recorder works without it, audio will just be silence. |
+| **USB-C cable** | To connect the FireBeetle 2 to your PC for flashing and serial monitor. |
+
+### Step 2: Connect the Hardware
+
+1. **Camera**: Plug the 22-pin end of the FPC cable into the FireBeetle 2's CSI connector. Plug the 15-pin end into the Camera Module 3. Make sure the contacts face the right way and the latches are closed.
+2. **SD card**: Insert a FAT32-formatted MicroSD card into the card slot on the FireBeetle 2.
+3. **Microphone** (optional): Wire your PDM mic — CLK to GPIO 46, DATA to GPIO 47, VCC to 3.3V, GND to GND.
+4. **USB**: Plug the FireBeetle 2 into your PC with a USB-C cable.
+
+### Step 3: Install Prerequisites on Windows
+
+You need **Git** and **Python 3.x** installed before you can install ESP-IDF.
+
+#### Install Git
+1. Download Git from https://git-scm.com/download/win
+2. Run the installer. Accept all the defaults — just keep clicking "Next" until it's done.
+3. Open a **new PowerShell window** and type `git --version` to confirm it works.
+
+#### Install Python
+1. Download Python from https://www.python.org/downloads/ (get the latest 3.x version).
+2. Run the installer. **IMPORTANT: Check the box "Add python.exe to PATH"** before clicking Install.
+3. Open a **new PowerShell window** and type `python --version` to confirm it works.
+
+### Step 4: Install ESP-IDF v5.4.1
+
+> **Why v5.4.1 specifically?** Early FireBeetle 2 boards have an ESP32-P4 chip revision v1.0 (ECO1). Newer ESP-IDF versions (v5.5+) build bootloaders for newer chip revisions and will crash with "Illegal instruction" on v1.0 chips. ESP-IDF v5.4.1 is the version that works.
+
+1. Open **PowerShell** (not CMD).
+
+2. Clone ESP-IDF v5.4.1 (this downloads ~1.5 GB and takes a while):
+   ```powershell
+   cd C:\Users\$env:USERNAME
+   git clone -b v5.4.1 --recursive https://github.com/espressif/esp-idf.git esp-idf-5.4.1
+   ```
+   This will create `C:\Users\YourName\esp-idf-5.4.1\`.
+
+3. Run the install script to download all the toolchains (compilers, debuggers, etc.):
+   ```powershell
+   cd C:\Users\$env:USERNAME\esp-idf-5.4.1
+   .\install.ps1 esp32p4
+   ```
+   This downloads everything needed to build for the ESP32-P4. It can take 10-20 minutes.
+
+4. Test that it installed correctly:
+   ```powershell
+   .\export.ps1
+   idf.py --version
+   ```
+   You should see something like `ESP-IDF v5.4.1`. If you get errors, close PowerShell and try again from step 3.
+
+### Step 5: Clone This Project
+
+1. Open **PowerShell**.
+
+2. Pick a folder where you want to put the project, then clone it:
+   ```powershell
+   cd C:\Users\$env:USERNAME\Documents
+   git clone --recursive https://github.com/elliotsnd/esp32p4_hardware_test.git
+   cd esp32p4_hardware_test
+   ```
+   The `--recursive` flag is important — it also downloads the modified video driver in `components/esp-video-components/`.
+
+### Step 6: Build the Firmware
+
+Every time you open a new PowerShell window, you need to "activate" ESP-IDF first. Here's the full sequence:
+
+```powershell
+# Step A: Activate ESP-IDF (required once per PowerShell window)
+cd C:\Users\$env:USERNAME\esp-idf-5.4.1
+.\export.ps1
+
+# Step B: Go to the project folder
+cd C:\Users\$env:USERNAME\Documents\esp32p4_hardware_test
+
+# Step C: Build
+idf.py build
+```
+
+The first build takes several minutes (it compiles the entire ESP-IDF framework). Subsequent builds are much faster.
+
+If the build succeeds, you'll see:
+```
+Project build complete. To flash, run:
+ idf.py flash
+```
+
+### Step 7: Find Your COM Port
+
+1. Plug in the FireBeetle 2 via USB.
+2. Open **Device Manager** (press Win+X, click "Device Manager").
+3. Expand **"Ports (COM & LPT)"**.
+4. Look for something like **"USB-ENHANCED-SERIAL CH9102 (COM5)"** or **"USB Serial Device (COM3)"**.
+5. Note the **COM number** (e.g., COM5). You'll use this in the next step.
+
+> If you don't see any COM port, you may need to install the CH340/CH9102 USB driver from the DFRobot wiki for the FireBeetle 2.
+
+### Step 8: Flash the Firmware
+
+**IMPORTANT: Close any serial monitors or terminals that are using the COM port before flashing.** If the port is busy, flashing will fail.
+
+```powershell
+idf.py -p COM5 flash
+```
+Replace `COM5` with your actual COM port from Step 7.
+
+You should see progress bars and "Hash of data verified." messages. When it's done:
+```
+Leaving...
+Hard resetting via RTS pin...
+```
+
+### Step 9: Watch the Serial Monitor
+
+To see what the device is doing:
+
+```powershell
+idf.py -p COM5 monitor
+```
+
+You should see log messages showing:
+- Camera initialization (IMX708 detected)
+- SD card mounted
+- Recording starting
+- Frame count and FPS updates
+
+Press **Ctrl+]** to exit the monitor.
+
+### Step 10: Record Video
+
+Once flashed, the device automatically:
+1. Boots up and initializes the camera, SD card, and microphone
+2. Starts recording H.264 video + audio to an AVI file on the SD card
+3. Creates files like `REC_0001.avi`, `REC_0002.avi`, etc.
+
+To get your recordings:
+1. Press the **reset button** on the FireBeetle 2 (or unplug it) to stop recording cleanly
+2. Remove the MicroSD card
+3. Put it in your PC's card reader
+4. Copy the `.avi` files — they play in VLC, Windows Media Player, etc.
+
+---
+
+## Troubleshooting
+
+### "Illegal instruction" crash on boot
+Your ESP-IDF version is too new for your chip. You **must** use ESP-IDF v5.4.1. See Step 4.
+
+### Flash fails with "could not open port" or "Permission denied"
+Another program is using the COM port. Close all serial monitors, Python scripts, and other terminals, then try again. In PowerShell:
+```powershell
+Stop-Process -Name "python" -Force -ErrorAction SilentlyContinue
+```
+
+### No COM port shows up in Device Manager
+- Try a different USB cable (some are charge-only with no data wires)
+- Install the CH340/CH9102 driver from the DFRobot FireBeetle 2 wiki page
+
+### Build fails with "component not found"
+Make sure you cloned with `--recursive`:
+```powershell
+git submodule update --init --recursive
+```
+
+### Camera not detected / I2C errors
+- Check the FPC cable is seated properly in both connectors
+- Make sure the latch is closed on both ends
+- The contacts on the cable should face the correct direction (check your board's marking)
+
+### SD card not detected
+- Card must be **FAT32** formatted (not exFAT or NTFS)
+- Cards over 32GB often come formatted as exFAT — reformat to FAT32
+- Try a different card
+
+### Video files are corrupted
+- Don't unplug power during recording — always press the reset button first to close the file cleanly
+- If files are still bad, the SD card may be too slow — use a Class 10 / U1 or faster card
+
+---
+
+## Project Structure
+
+| File | Purpose |
+|------|---------|
+| `main/camera_recorder.c` | Main application — capture, H.264 encode, audio record, AVI mux, SD write |
+| `components/esp-video-components/` | Modified video driver fork — ISP clock at 240MHz, CSI bridge afull_thrd fix |
+| `sdkconfig.defaults` | Build configuration — chip settings, clock speeds, memory layout |
+| `CMakeLists.txt` | Top-level build file — registers video component directories |
+| `main/idf_component.yml` | Dependency manifest — pulls `cmake_utilities` from ESP component registry |
+| `ESP-IDF_541_SETUP.md` | Notes on why v5.4.1 is required for early ESP32-P4 chips |
 
 ## Performance Tuning
 
-All clocks maximized for best throughput:
-- CPU: 360 MHz
-- ISP: 240 MHz (PLL_F240M source)
-- H.264 encoder: 160 MHz
-- PSRAM: 200 MHz
-- Flash: QIO mode
-- Compiler: -O2 optimization
+All clocks are maximized for best throughput:
 
-## Build & Flash
-
-Requires **ESP-IDF v5.4.1** (needed for ESP32-P4 v1.0/ECO1).
-
-```powershell
-cd C:\Users\micha\esp-idf-5.4.1
-.\export.ps1
-cd "G:\_Organized_Loose_Files\esp32p4_hardware_test"
-idf.py build
-idf.py -p COM5 flash monitor
-```
-
-## Submodules
-
-This project uses a modified fork of esp-video-components with ISP clock and CSI bridge fixes:
-
-```bash
-git clone --recursive https://github.com/elliotsnd/esp32p4_hardware_test.git
-```
-
-## Key Files
-
-- `main/camera_recorder.c` — Main application (capture, encode, mux, record)
-- `components/esp-video-components/` — Modified video driver (ISP 240MHz, CSI afull_thrd fix)
-- `sdkconfig.defaults` — Project configuration (QIO flash, -O2, 360MHz CPU)
-
-- Check target: `idf.py set-target esp32p4`
-
-## Resources
+| Clock | Speed | Notes |
+|-------|-------|-------|
+| CPU | 360 MHz | Max for ESP32-P4 in ESP-IDF v5.4.1 |
+| ISP | 240 MHz | Uses PLL_F240M source (was 80 MHz default — caused stalls at 1080p) |
+| H.264 encoder | 160 MHz | Hardcoded max in ESP32-P4 HAL |
+| PSRAM | 200 MHz | Max for hex-SPI PSRAM |
+| Flash | QIO mode | 2× read bandwidth vs default DIO |
+| Compiler | -O2 | Performance optimization (default is -Og debug) |
 
 - [ESP32-P4 Datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-p4_datasheet_en.pdf)
 - [FireBeetle 2 ESP32-P4 Wiki](https://wiki.dfrobot.com/SKU_DFR1075_FireBeetle_2_Board_ESP32_P4)
