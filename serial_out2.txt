@@ -1,0 +1,418 @@
+I (113) esp_image: segment 1: paddr=00036ef8 vaddr=30100000 sizeI (4968) CAM_REC: LDOs OK (MIPI 2.5V, IO5 3.3V)
+I (4968) CAM_REC: [HEAP] after init_ldo: internal=34119307 PSRAM=33551708
+I (4968) CAM_REC: I2C OK (SDA=7, SCL=8)
+I (4971) CAM_REC: [HEAP] after init_i2c: internal=34118095 PSRAM=33550644
+I (4977) CAM_REC: Pre-emptive camera reset: silencing IMX708 MIPI lanes...
+I (5534) CAM_REC: Camera silenced. MIPI lanes are clean.
+I (5534) CAM_REC: [HEAP] after pre-emptive reset: internal=34118095 PSRAM=33550644
+I (5535) imx708: IMX708 auto-detect: Called for MIPI CSI interface
+I (5541) imx708: IMX708 auto-detect: Config pointer: 0x4ff1c85c
+I (5546) imx708: IMX708 auto-detect: Setting sensor_port to ESP_CAM_SENSOR_MIPI_CSI
+I (5554) imx708: IMX708 detect: Starting detection process
+I (5559) imx708: IMX708 detect: SCCB addr=0x1a, sensor_port=1
+I (5564) imx708: IMX708 detect: Device structure initialized, calling power on
+I (5571) imx708: IMX708 power_on: Starting power on sequence
+I (5577) imx708: IMX708 power_on: xclk_pin=-1, pwdn_pin=-1, reset_pin=-1
+I (5583) imx708: IMX708 power_on: No external clock pin configured
+I (5589) imx708: IMX708 power_on: No power down pin configured
+I (5595) imx708: IMX708 power_on: No reset pin configured
+I (5600) imx708: IMX708 power_on: Power on sequence completed
+I (5605) imx708: IMX708: Sending software reset (reg 0x0103)
+I (5761) imx708: IMX708 detect: Power on successful, reading sensor ID
+I (5761) imx708: IMX708 get_sensor_id: Reading chip ID from registers 0x0016 and 0x0017
+I (5764) imx708: IMX708 get_sensor_id: Using I2C address 0x1A
+I (5769) imx708: IMX708 get_sensor_id: Read pid_h = 0x07 at address 0x1A
+I (5776) imx708: IMX708 get_sensor_id: Read pid_l = 0x08 at address 0x1A
+I (5782) imx708: IMX708 get_sensor_id: Calculated chip ID = 0x0708 (expected: 0x0708) at address 0x1A
+I (5791) imx708: IMX708 get_sensor_id: Successfully found IMX708 at I2C address 0x1A
+I (5798) imx708: Detected IMX708 camera sensor PID=0x708
+I (5803) imx708: IMX708 auto-detect: Detection successful!
+I (5808) imx708: IMX708 global device reference set for hardware access
+I (5815) imx708: IMX708 auto-detect: Global device reference configured for hardware access
+I (5823) dw9807: Motor fmt: Direct_mode mode=1 codes_per_step=1 period_us=1000 init_pos=0
+I (5831) dw9807: Set focus: req=0 clamp=0
+I (5835) dw9807: Detected Cam motor
+W (5838) imx708: imx708_set_format: format parameter is NULL, using default format
+I (5845) imx708: imx708_set_format: Selected 1280x720 format based on Kconfig
+I (5852) imx708: imx708_set_format: Using default format: MIPI_2lane_24Minput_RAW10_1280x720_60fps
+W (5878) imx708: VTS drift detected: cur=2154, nominal=1500. Restoring.
+E (5879) imx708: query_para_desc: Parameter ID 0x30018 is not supported
+I (5883) ISP: Gain change: idx 0->100 (1.0x)
+I (5885) imx708: Exposure applied: 362 lines (~4022 us), VTS=1500
+I (5890) CAM_REC: esp_video OK
+I (5893) CAM_REC: [HEAP] after init_esp_video: internal=34107903 PSRAM=33545968
+W (5900) imx708: imx708_set_format: format parameter is NULL, using default format
+I (5907) imx708: imx708_set_format: Selected 1280x720 format based on Kconfig
+I (5914) imx708: imx708_set_format: Using default format: MIPI_2lane_24Minput_RAW10_1280x720_60fps
+I (5939) CAM_REC: Camera device: /dev/video0 (fd=11)
+I (5939) CAM_REC:   driver: MIPI-CSI, card: MIPI-CSI
+I (5940) CAM_REC:   cap: VIDEO_CAPTURE
+I (5941) CAM_REC:   cap: STREAMING
+I (5944) CAM_REC: Sensor default: 1280x720
+I (5948) CAM_REC: No PPA scaling needed (sensor == encoder dims)
+I (5954) CAM_REC:   Available format[0]: BA81 (0x31384142)
+I (5959) CAM_REC:   Available format[1]: RGBP (0x50424752)
+I (5964) CAM_REC:   Available format[2]: RGB3 (0x33424752)
+I (5969) CAM_REC:   Available format[3]: YU12 (0x32315559)
+I (5975) CAM_REC: Selected capture format: YU12
+I (5979) CAM_REC: Camera format set: 1280x720 YU12
+I (5983) CAM_REC:   cap_buf[0]: 0x48002240 1382400 bytes
+I (5988) CAM_REC:   cap_buf[1]: 0x48153a80 1382400 bytes
+I (5993) CAM_REC:   cap_buf[2]: 0x482a52c0 1382400 bytes
+I (5998) CAM_REC:   cap_buf[3]: 0x483f6b00 1382400 bytes
+I (6003) CAM_REC:   cap_buf[4]: 0x48548340 1382400 bytes
+I (6009) CAM_REC:   cap_buf[5]: 0x48699b80 1382400 bytes
+I (6014) CAM_REC: H.264 device: /dev/video11 (fd=12)
+I (6018) CAM_REC:   driver: H.264, card: H.264
+I (6022) CAM_REC:   cap: STREAMING
+I (6026) CAM_REC:   m2m_cap[0]: 0x487eb4c0 3686400 bytes
+I (6031) CAM_REC: Video pipeline init OK
+I (6034) CAM_REC: [HEAP] after init_video_pipeline: internal=22126175 PSRAM=21564808
+I (6042) CAM_REC: ISP WB set: red=1.6 blue=1.4
+I (6048) CAM_REC: PDM mic OK: 16000Hz 16bit mono (CLK=GPIO12, DATA=GPIO9)
+I (6052) CAM_REC: [HEAP] after init_pdm_mic: internal=22052319 PSRAM=21499784
+I (6059) gpio: GPIO[45]| InputEn: 0| OutputEn: 1| OpenDrain: 0| Pullup: 0| Pulldown: 0| Intr:0
+I (6068) CAM_REC: SD: power cycling card (GPIO45)...
+I (8072) CAM_REC: SD: trying 4-bit 40MHz
+I (8072) gpio: GPIO[43]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8073) gpio: GPIO[44]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8081) gpio: GPIO[39]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8090) gpio: GPIO[40]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8098) gpio: GPIO[41]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8106) gpio: GPIO[42]| InputEn: 0| OutputEn: 1| OpenDrain: 0| Pullup: 0| Pulldown: 0| Intr:0
+I (8358) gpio: GPIO[42]| InputEn: 0| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (8363) CAM_REC: SD mounted: SH32G, 30436 MB (4-bit 40MHz)
+I (8384) CAM_REC: SD write test: OK
+I (8384) CAM_REC: === SD SPEED BENCHMARK ===
+I (9268) CAM_REC:   64KB INTERNAL buf, 32 writes = 2048 KB total
+I (9269) CAM_REC:   Raw SDMMC:         10933 KB/s (187 ms)
+I (9269) CAM_REC:   VFS/FAT new file:  5948 KB/s (344 ms)
+I (9274) CAM_REC:   VFS/FAT pre-alloc: 6143 KB/s (333 ms)
+I (9279) CAM_REC: === BENCHMARK DONE ===
+I (9283) CAM_REC: [HEAP] init complete: internal=22021351 PSRAM=21470020
+I (9289) CAM_REC: Recording starts in 2 seconds...
+I (11294) CAM_REC: Starting recording (1800s)
+I (11294) CAM_REC: Sensor stream-off sent, waiting 250ms for LP-11...
+I (11561) csi_video: CSI config: 1280x720, lanes=2, in_color=16777217, out_color=50331650, bitrate=450 Mbps
+I (11561) csi_video: CSI state: bypass_isp=0, bayer_order=3
+I (11567) imx708: imx708_set_stream: STARTING streaming
+I (11570) imx708: imx708_set_stream: Reg 0x0100 = 0x01 (expected 0x01)
+I (11576) imx708: imx708_set_stream: Stream ENABLED, format=MIPI_2lane_24Minput_RAW10_1280x720_60fps
+I (11585) CAM_REC: CSI enable state: csi2_resetn=1 dphy_rstz=1 phy_shutdownz=1 brg_en=1 enableclk=1 cfg_clk_en=1 hadr=1280 vadr=720
+I (11596) CAM_REC: PHY poll (T+ms | stop_d0 stop_d1 stop_clk | clk_hs | buf_depth | isp_raw):
+I (11605) CAM_REC:   T+ 19 | 1 1 1 | hs=0 | dep=0 | isp=0x00000000 | isr_new=0
+I (11622) CAM_REC:   T+ 36 | 1 1 0 | hs=1 | dep=9 | isp=0x00000000 | isr_new=0
+I (11622) CAM_REC:   PHY entered HS or data arrived at T+36 ms!
+I (11624) CAM_REC: Streaming ON (attempt 1) - waiting for first MIPI frame (500ms)...
+I (11628) dw9807: set_para POSITION_CODE=400
+I (11636) dw9807: Set focus: req=400 clamp=400
+I (11640) CAM_REC: PHY at T+55 (after dqbuf): stop=1/1/0 hs=1 dep=0 isp=0x0aec0000
+I (11647) CAM_REC: CSI at T+55: resetn=1 dphy=1 shutdn=1 brg=1 eclk=1 cclk=1
+I (11654) CAM_REC: ISR counters: finished=1 get_new=1 dropped=0 q_empty=0
+I (11661) CAM_REC: First frame received! (1382400 bytes) - MIPI link OK
+I (11667) CAM_REC: Waiting 29 frames for AEC/AGC settling...
+I (11672) CAM_REC: AEC skip frame 1/29 - DQBUF... (ISR: fin=1 new=1 drop=0 qe=0)
+I (11679) CAM_REC:   got AEC frame 1, continuing...
+I (11684) CAM_REC: AEC skip frame 2/29 - DQBUF... (ISR: fin=2 new=2 drop=0 qe=0)
+I (11719) dw9807: set_para POSITION_CODE=416
+I (11719) dw9807: Set focus: req=416 clamp=416
+I (11720) CAM_REC:   got AEC frame 2, continuing...
+I (11721) CAM_REC: AEC skip frame 3/29 - DQBUF... (ISR: fin=3 new=3 drop=0 qe=0)
+I (11766) ISP: Gain change: idx 100->147 (1.5x)
+I (11766) CAM_REC:   got AEC frame 3, continuing...
+I (11767) CAM_REC: AEC skip frame 4/29 - DQBUF... (ISR: fin=4 new=4 drop=0 qe=0)
+I (11767) imx708: Exposure applied: 747 lines (~8300 us), VTS=1500
+I (11812) dw9807: set_para POSITION_CODE=432
+I (11812) dw9807: Set focus: req=432 clamp=432
+I (11812) CAM_REC:   got AEC frame 4, continuing...
+I (11813) CAM_REC: AEC skip frame 5/29 - DQBUF... (ISR: fin=5 new=5 drop=0 qe=0)
+I (11858) CAM_REC:   got AEC frame 5, continuing...
+I (11858) CAM_REC: AEC skip frame 6/29 - DQBUF... (ISR: fin=6 new=6 drop=0 qe=0)
+I (11904) dw9807: set_para POSITION_CODE=448
+I (11904) dw9807: Set focus: req=448 clamp=448
+I (11904) CAM_REC:   got AEC frame 6, continuing...
+I (11905) CAM_REC: AEC skip frame 7/29 - DQBUF... (ISR: fin=7 new=7 drop=0 qe=0)
+I (11950) ISP: Gain change: idx 147->140 (1.4x)
+I (11950) CAM_REC:   got AEC frame 7, continuing...
+W (11950) imx708: Requested exposure 16600 us (lines=1494) exceeds budget (max_lines=1425). Clamping only
+I (11957) CAM_REC: AEC skip frame 8/29 - DQBUF... (ISR: fin=8 new=8 drop=0 qe=0)
+I (11958) imx708: Exposure applied: 1425 lines (~15833 us), VTS=1500
+I (11996) dw9807: set_para POSITION_CODE=464
+I (11996) dw9807: Set focus: req=464 clamp=464
+I (11996) CAM_REC:   got AEC frame 8, continuing...
+I (11998) CAM_REC: AEC skip frame 9/29 - DQBUF... (ISR: fin=9 new=9 drop=0 qe=0)
+I (12042) CAM_REC:   got AEC frame 9, continuing...
+I (12042) CAM_REC: AEC skip frame 10/29 - DQBUF... (ISR: fin=10 new=10 drop=0 qe=0)
+I (12088) dw9807: set_para POSITION_CODE=480
+I (12088) dw9807: Set focus: req=480 clamp=480
+I (12088) CAM_REC:   got AEC frame 10, continuing...
+I (12090) CAM_REC: AEC skip frame 11/29 - DQBUF... (ISR: fin=11 new=11 drop=0 qe=0)
+I (12134) ISP: Gain change: idx 140->247 (2.5x)
+I (12135) CAM_REC:   got AEC frame 11, continuing...
+I (12135) CAM_REC: AEC skip frame 12/29 - DQBUF... (ISR: fin=12 new=12 drop=0 qe=0)
+I (12135) ISP: Gain SET: idx=247 (2.5x)
+I (12180) dw9807: set_para POSITION_CODE=496
+I (12181) dw9807: Set focus: req=496 clamp=496
+I (12181) CAM_REC:   got AEC frame 12, continuing...
+I (12182) CAM_REC: AEC skip frame 13/29 - DQBUF... (ISR: fin=13 new=13 drop=0 qe=0)
+I (12227) CAM_REC:   got AEC frame 13, continuing...
+I (12227) CAM_REC: AEC skip frame 14/29 - DQBUF... (ISR: fin=14 new=14 drop=0 qe=0)
+I (12273) dw9807: set_para POSITION_CODE=400
+I (12273) dw9807: Set focus: req=400 clamp=400
+I (12273) CAM_REC:   got AEC frame 14, continuing...
+I (12274) CAM_REC: AEC skip frame 15/29 - DQBUF... (ISR: fin=15 new=15 drop=0 qe=0)
+I (12319) ISP: Gain change: idx 247->390 (3.9x)
+I (12319) CAM_REC:   got AEC frame 15, continuing...
+I (12319) CAM_REC: AEC skip frame 16/29 - DQBUF... (ISR: fin=16 new=16 drop=0 qe=0)
+I (12320) ISP: Gain SET: idx=390 (3.9x)
+I (12365) dw9807: set_para POSITION_CODE=404
+I (12365) dw9807: Set focus: req=404 clamp=404
+I (12365) CAM_REC:   got AEC frame 16, continuing...
+I (12367) CAM_REC: AEC skip frame 17/29 - DQBUF... (ISR: fin=17 new=17 drop=0 qe=0)
+I (12411) CAM_REC:   got AEC frame 17, continuing...
+I (12411) CAM_REC: AEC skip frame 18/29 - DQBUF... (ISR: fin=18 new=18 drop=0 qe=0)
+I (12457) dw9807: set_para POSITION_CODE=408
+I (12457) dw9807: Set focus: req=408 clamp=408
+I (12457) CAM_REC:   got AEC frame 18, continuing...
+I (12459) CAM_REC: AEC skip frame 19/29 - DQBUF... (ISR: fin=19 new=19 drop=0 qe=0)
+I (12503) ISP: Gain change: idx 390->551 (5.5x)
+I (12504) CAM_REC:   got AEC frame 19, continuing...
+I (12504) CAM_REC: AEC skip frame 20/29 - DQBUF... (ISR: fin=20 new=20 drop=0 qe=0)
+I (12504) ISP: Gain SET: idx=551 (5.5x)
+I (12549) dw9807: set_para POSITION_CODE=412
+I (12549) dw9807: Set focus: req=412 clamp=412
+I (12550) CAM_REC:   got AEC frame 20, continuing...
+I (12551) CAM_REC: AEC skip frame 21/29 - DQBUF... (ISR: fin=21 new=21 drop=0 qe=0)
+I (12595) CAM_REC:   got AEC frame 21, continuing...
+I (12596) CAM_REC: AEC skip frame 22/29 - DQBUF... (ISR: fin=22 new=22 drop=0 qe=0)
+I (12641) dw9807: set_para POSITION_CODE=416
+I (12642) dw9807: Set focus: req=416 clamp=416
+I (12642) CAM_REC:   got AEC frame 22, continuing...
+I (12643) CAM_REC: AEC skip frame 23/29 - DQBUF... (ISR: fin=23 new=23 drop=0 qe=0)
+I (12688) ISP: Gain change: idx 551->706 (7.1x)
+I (12688) CAM_REC:   got AEC frame 23, continuing...
+I (12688) CAM_REC: AEC skip frame 24/29 - DQBUF... (ISR: fin=24 new=24 drop=0 qe=0)
+I (12689) ISP: Gain SET: idx=706 (7.1x)
+I (12734) dw9807: set_para POSITION_CODE=400
+I (12734) dw9807: Set focus: req=400 clamp=400
+I (12734) CAM_REC:   got AEC frame 24, continuing...
+I (12736) CAM_REC: AEC skip frame 25/29 - DQBUF... (ISR: fin=25 new=25 drop=0 qe=0)
+I (12780) CAM_REC:   got AEC frame 25, continuing...
+I (12780) CAM_REC: AEC skip frame 26/29 - DQBUF... (ISR: fin=26 new=26 drop=0 qe=0)
+I (12826) CAM_REC:   got AEC frame 26, continuing...
+I (12826) CAM_REC: AEC skip frame 27/29 - DQBUF... (ISR: fin=27 new=27 drop=0 qe=0)
+I (12872) ISP: Gain change: idx 706->823 (8.2x)
+I (12872) CAM_REC:   got AEC frame 27, continuing...
+I (12873) CAM_REC: AEC skip frame 28/29 - DQBUF... (ISR: fin=28 new=28 drop=0 qe=0)
+I (12873) ISP: Gain SET: idx=823 (8.2x)
+I (12918) CAM_REC:   got AEC frame 28, continuing...
+I (12918) CAM_REC: AEC skip frame 29/29 - DQBUF... (ISR: fin=29 new=29 drop=0 qe=0)
+I (12964) CAM_REC:   got AEC frame 29, continuing...
+I (12964) CAM_REC: AEC/AGC settling complete
+I (13057) ISP: Gain change: idx 823->928 (9.3x)
+I (13058) ISP: Gain SET: idx=928 (9.3x)
+I (13241) ISP: Gain change: idx 928->1027 (10.3x)
+I (13242) ISP: Gain SET: idx=1027 (10.3x)
+I (13425) ISP: Gain change: idx 1027->1121 (11.2x)
+I (13426) ISP: Gain SET: idx=1121 (11.2x)
+I (13610) ISP: Gain change: idx 1121->1207 (12.1x)
+I (13611) ISP: Gain SET: idx=1207 (12.1x)
+I (13794) ISP: Gain change: idx 1207->1293 (12.9x)
+I (13795) ISP: Gain SET: idx=1293 (12.9x)
+I (13840) ISP: AE: f=0x0 exp=16600 gn=12.9 c_exp=16600 c_gn=12.9
+I (13979) ISP: Gain change: idx 1293->1377 (13.8x)
+I (13980) ISP: Gain SET: idx=1377 (13.8x)
+I (14163) ISP: Gain change: idx 1377->1451 (14.5x)
+I (14164) ISP: Gain SET: idx=1451 (14.5x)
+I (14348) ISP: Gain change: idx 1451->1512 (15.1x)
+I (14348) ISP: Gain SET: idx=1512 (15.1x)
+I (14532) ISP: Gain change: idx 1512->1563 (15.6x)
+I (14533) ISP: Gain SET: idx=1563 (15.6x)
+I (16146) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (18451) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (20019) dw9807: set_para POSITION_CODE=400
+I (20019) dw9807: Set focus: req=400 clamp=400
+I (20111) dw9807: set_para POSITION_CODE=416
+I (20111) dw9807: Set focus: req=416 clamp=416
+I (20203) dw9807: set_para POSITION_CODE=432
+I (20203) dw9807: Set focus: req=432 clamp=432
+I (20295) dw9807: set_para POSITION_CODE=448
+I (20295) dw9807: Set focus: req=448 clamp=448
+I (20387) dw9807: set_para POSITION_CODE=464
+I (20388) dw9807: Set focus: req=464 clamp=464
+I (20480) dw9807: set_para POSITION_CODE=480
+I (20480) dw9807: Set focus: req=480 clamp=480
+I (20572) dw9807: set_para POSITION_CODE=496
+I (20572) dw9807: Set focus: req=496 clamp=496
+I (20664) dw9807: set_para POSITION_CODE=464
+I (20664) dw9807: Set focus: req=464 clamp=464
+I (20756) ISP: AE: f=0x40000 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (20757) dw9807: set_para POSITION_CODE=468
+I (20757) dw9807: Set focus: req=468 clamp=468
+I (20849) dw9807: set_para POSITION_CODE=472
+I (20849) dw9807: Set focus: req=472 clamp=472
+I (20941) dw9807: set_para POSITION_CODE=476
+I (20941) dw9807: Set focus: req=476 clamp=476
+I (21033) dw9807: set_para POSITION_CODE=480
+I (21033) dw9807: Set focus: req=480 clamp=480
+I (21125) dw9807: set_para POSITION_CODE=472
+I (21125) dw9807: Set focus: req=472 clamp=472
+I (23062) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (25367) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (25832) CAM_REC: Pre-allocated 1907MB in 12854ms
+I (25832) CAM_REC: File buffer: 128KB INTERNAL DMA
+I (25832) CAM_REC: Staging buffer: 32KB INTERNAL DMA
+I (25834) CAM_REC: AVI writer started: /sdcard/vid/rec_0010.avi
+I (25841) CAM_REC: AVI header written, movi_start=326
+I (25845) CAM_REC: Capture: starting 1800 second recording
+I (25851) CAM_REC: Audio capture started
+I (25866) CAM_REC: Frame 1: h264=13KB, write=0ms, qwait=20ms, audio_chunks=1
+I (25937) CAM_REC: Frame 2: h264=63KB, write=1ms, qwait=68ms, audio_chunks=2
+I (25983) CAM_REC: Frame 3: h264=44KB, write=1ms, qwait=44ms, audio_chunks=3
+I (27672) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (28456) CAM_REC: [DIAG] cap_enc stack HWM=5800 heap=16869751
+I (29978) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (30851) CAM_REC: [Status] cap=91 wr=39 drop=0 rec=YES heap=16837720
+I (31361) CAM_REC: [DIAG] cap_enc stack HWM=5784 heap=16869751
+I (32283) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (32345) CAM_REC: Frame 50: h264=44KB, write=1ms, qwait=69ms, audio_chunks=50
+I (32346) CAM_REC: Written 50 frames (2.6 FPS avg), captured=118, dropped=0, audio=50 chunks
+I (32349) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869511 PSRAM=16611696
+I (34312) CAM_REC: [DIAG] cap_enc stack HWM=5784 heap=16869511
+I (34588) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (35851) CAM_REC: [Status] cap=175 wr=76 drop=0 rec=YES heap=16836964
+I (36894) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (37309) CAM_REC: [DIAG] cap_enc stack HWM=5784 heap=16869511
+I (38800) CAM_REC: [TIMING] avg over 100: dqbuf=25736us enc=14820us copy=87112us total=127669us (7.8 FPS) skip=127
+I (38800) CAM_REC: Frame 100: h264=42KB, write=1ms, qwait=61ms, audio_chunks=100
+I (38807) CAM_REC: Written 100 frames (3.9 FPS avg), captured=227, dropped=0, audio=100 chunks
+I (38815) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (39199) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (40167) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (40851) CAM_REC: [Status] cap=260 wr=113 drop=0 rec=YES heap=16836732
+I (41504) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (43118) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (43810) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (45594) CAM_REC: Frame 150: h264=19KB, write=0ms, qwait=14ms, audio_chunks=150
+I (45595) CAM_REC: Written 150 frames (4.6 FPS avg), captured=341, dropped=0, audio=150 chunks
+I (45599) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (45851) CAM_REC: [Status] cap=345 wr=152 drop=0 rec=YES heap=16836732
+I (46106) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (46115) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (48420) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (48974) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (50726) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (50851) CAM_REC: [Status] cap=428 wr=188 drop=0 rec=YES heap=16836732
+I (52121) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (52171) CAM_REC: [TIMING] avg over 100: dqbuf=25709us enc=14890us copy=91769us total=132370us (7.6 FPS) skip=253
+I (52171) CAM_REC: Frame 200: h264=41KB, write=1ms, qwait=48ms, audio_chunks=200
+I (52177) CAM_REC: Written 200 frames (5.1 FPS avg), captured=453, dropped=0, audio=200 chunks
+I (52186) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (53031) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (55336) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (55851) CAM_REC: [Status] cap=495 wr=217 drop=0 rec=YES heap=16836732
+I (55903) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (57642) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (57643) CAM_REC: [DIAG] audio stack HWM=2300
+I (58933) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (59947) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (59963) CAM_REC: Frame 250: h264=16KB, write=0ms, qwait=46ms, audio_chunks=250
+I (59963) CAM_REC: Written 250 frames (5.3 FPS avg), captured=568, dropped=0, audio=250 chunks
+I (59967) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (60851) CAM_REC: [Status] cap=578 wr=254 drop=0 rec=YES heap=16836732
+I (61883) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (62252) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (64558) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (64789) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (65851) CAM_REC: [Status] cap=669 wr=294 drop=0 rec=YES heap=16837248
+I (66786) CAM_REC: [TIMING] avg over 100: dqbuf=25506us enc=14886us copy=104325us total=144718us (6.9 FPS) skip=384
+I (66786) CAM_REC: Frame 300: h264=20KB, write=0ms, qwait=49ms, audio_chunks=300
+I (66793) CAM_REC: Written 300 frames (5.6 FPS avg), captured=684, dropped=0, audio=300 chunks
+I (66801) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (66863) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (67862) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (69168) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (70736) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (70851) CAM_REC: [Status] cap=752 wr=331 drop=0 rec=YES heap=16837248
+I (71474) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (73334) CAM_REC: Frame 350: h264=50KB, write=1ms, qwait=45ms, audio_chunks=350
+I (73335) CAM_REC: Written 350 frames (5.8 FPS avg), captured=795, dropped=0, audio=350 chunks
+I (73339) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (73727) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (73779) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (75851) CAM_REC: [Status] cap=837 wr=368 drop=0 rec=YES heap=16836732
+I (76084) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (76673) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (78390) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (79576) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (80094) CAM_REC: [TIMING] avg over 100: dqbuf=25353us enc=14836us copy=91302us total=131492us (7.6 FPS) skip=505
+I (80094) CAM_REC: Frame 400: h264=35KB, write=1ms, qwait=15ms, audio_chunks=400
+I (80100) CAM_REC: Written 400 frames (6.0 FPS avg), captured=910, dropped=0, audio=400 chunks
+I (80109) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (80695) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (80851) CAM_REC: [Status] cap=921 wr=405 drop=0 rec=YES heap=16836732
+I (82538) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (83000) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (85306) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (85502) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (85851) CAM_REC: [Status] cap=1005 wr=442 drop=0 rec=YES heap=16836732
+I (86582) CAM_REC: Frame 450: h264=42KB, write=1ms, qwait=14ms, audio_chunks=450
+I (86582) CAM_REC: Written 450 frames (6.1 FPS avg), captured=1020, dropped=0, audio=450 chunks
+I (86587) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (87611) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (88439) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (89641) CAM_REC: [DIAG] audio stack HWM=2220
+I (89916) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (90851) CAM_REC: [Status] cap=1090 wr=479 drop=0 rec=YES heap=16836732
+I (91115) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (92222) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (93349) CAM_REC: [TIMING] avg over 100: dqbuf=25730us enc=14860us copy=90626us total=131216us (7.6 FPS) skip=631
+I (93349) CAM_REC: Frame 500: h264=44KB, write=1ms, qwait=14ms, audio_chunks=500
+I (93356) CAM_REC: Written 500 frames (6.2 FPS avg), captured=1135, dropped=0, audio=500 chunks
+I (93364) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (94288) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (94527) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (95851) CAM_REC: [Status] cap=1178 wr=519 drop=0 rec=YES heap=16837248
+I (96832) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (97201) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (99137) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (100121) CAM_REC: Frame 550: h264=45KB, write=322ms, qwait=40ms, audio_chunks=550
+I (100121) CAM_REC: Written 550 frames (6.3 FPS avg), captured=1248, dropped=0, audio=550 chunks
+I (100126) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (100136) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (100851) CAM_REC: [Status] cap=1266 wr=558 drop=0 rec=YES heap=16837248
+I (101443) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (103166) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (103748) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (105851) CAM_REC: [Status] cap=1348 wr=593 drop=0 rec=YES heap=16836732
+I (105998) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (106053) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (106557) CAM_REC: [TIMING] avg over 100: dqbuf=25725us enc=14867us copy=90004us total=130596us (7.7 FPS) skip=759
+I (106557) CAM_REC: Frame 600: h264=43KB, write=1ms, qwait=15ms, audio_chunks=600
+I (106564) CAM_REC: Written 600 frames (6.4 FPS avg), captured=1364, dropped=0, audio=600 chunks
+I (106573) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (108359) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (108948) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (110664) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (110851) CAM_REC: [Status] cap=1436 wr=632 drop=0 rec=YES heap=16837248
+I (111883) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (112969) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (113322) CAM_REC: Frame 650: h264=20KB, write=337ms, qwait=45ms, audio_chunks=650
+I (113322) CAM_REC: Written 650 frames (6.5 FPS avg), captured=1475, dropped=0, audio=650 chunks
+I (113327) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (114793) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (115275) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (115851) CAM_REC: [Status] cap=1516 wr=668 drop=0 rec=YES heap=16836732
+I (117488) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (117580) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (119878) CAM_REC: [TIMING] avg over 100: dqbuf=25590us enc=14850us copy=91280us total=131721us (7.6 FPS) skip=885
+I (119878) CAM_REC: Frame 700: h264=55KB, write=1ms, qwait=15ms, audio_chunks=700
+I (119885) CAM_REC: Written 700 frames (6.5 FPS avg), captured=1589, dropped=0, audio=700 chunks
+I (119886) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (119893) CAM_REC: [DIAG] sd_wr stack HWM=5792 heap=16869279 PSRAM=16611696
+I (120439) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (120851) CAM_REC: [Status] cap=1606 wr=706 drop=0 rec=YES heap=16837248
+I (121642) CAM_REC: [DIAG] audio stack HWM=2220
+I (122191) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6
+I (123343) CAM_REC: [DIAG] cap_enc stack HWM=5608 heap=16869279
+I (124496) ISP: AE: f=0x0 exp=16600 gn=15.6 c_exp=16600 c_gn=15.6

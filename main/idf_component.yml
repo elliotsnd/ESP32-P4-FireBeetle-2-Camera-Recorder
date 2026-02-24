@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf: '>=5.3'
+  ## cmake_utilities needed by esp_cam_sensor
+  cmake_utilities: "0.*"
