@@ -8,7 +8,7 @@ Records H.264 video with PDM microphone audio to AVI files on SD card.
 
 - **1920×1080 @ 30fps** MIPI CSI-2 capture via IMX708
 - **H.264 hardware encoding** using ESP32-P4's built-in encoder
-- **PDM microphone** audio recording (16-bit, 16kHz) — mic is built into the FireBeetle 2 board
+- **PDM microphone** audio recording (16-bit, 16kHz)
 - **AVI container** output to SD card (~5 FPS write throughput)
 - **Auto-focus** via DW9807 VCM
 
@@ -20,42 +20,25 @@ This guide assumes you're on **Windows** and have never used ESP-IDF before. Fol
 
 ---
 
-### Step 1: Buy the Hardware
+### Step 1: What You Need
 
-You only need two things:
-
-| Part | Notes |
-|------|-------|
-| **FireBeetle 2 ESP32-P4** | Made by DFRobot. Has the ESP32-P4 chip with built-in H.264 encoder, built-in PDM microphone, and MicroSD card slot. |
-| **Raspberry Pi Camera Module 3** | The standard (non-wide) version. Uses IMX708 sensor + DW9807 autofocus motor. Connects via 22-pin FPC cable. |
-
-You'll also need:
-- **MicroSD card** — any size, must be formatted as **FAT32**. Class 10 or faster recommended.
-- **USB-C cable** — to connect the board to your PC for flashing and monitoring.
-
-The FireBeetle 2 should come with a 22-pin FPC cable for the camera. If not, you need a 22-pin to 15-pin FPC adapter cable (the board has a 22-pin MIPI CSI connector, the camera has a 15-pin connector).
+- **FireBeetle 2 ESP32-P4** (DFRobot)
+- **Raspberry Pi Camera Module 3** (standard, not wide)
+- **MicroSD card** (FAT32 formatted)
+- **USB-C cable**
 
 ### Step 2: Connect the Hardware
 
-1. **Camera**: Plug the 22-pin end of the FPC cable into the FireBeetle 2's CSI connector. Plug the 15-pin end into the Camera Module 3. Make sure the contacts face the right way and the latches are closed.
-2. **SD card**: Insert a FAT32-formatted MicroSD card into the card slot on the FireBeetle 2.
-3. **USB**: Plug the FireBeetle 2 into your PC with a USB-C cable.
-
-That's it — the microphone is already built into the board, no extra wiring needed.
+1. Connect the Camera Module 3 to the FireBeetle 2's CSI connector via the FPC cable. Make sure the cable latch is closed on both ends.
+2. Insert a FAT32-formatted MicroSD card.
+3. Plug in USB-C to your PC.
 
 ### Step 3: Install Prerequisites on Windows
 
 You need **Git** and **Python 3.x** installed before you can install ESP-IDF.
 
-#### Install Git
-1. Download Git from https://git-scm.com/download/win
-2. Run the installer. Accept all the defaults — just keep clicking "Next" until it's done.
-3. Open a **new PowerShell window** and type `git --version` to confirm it works.
-
-#### Install Python
-1. Download Python from https://www.python.org/downloads/ (get the latest 3.x version).
-2. Run the installer. **IMPORTANT: Check the box "Add python.exe to PATH"** before clicking Install.
-3. Open a **new PowerShell window** and type `python --version` to confirm it works.
+1. Install **Git**: https://git-scm.com/download/win (accept defaults)
+2. Install **Python 3**: https://www.python.org/downloads/ — **check "Add python.exe to PATH"** during install
 
 ### Step 4: Install ESP-IDF v5.4.1
 
