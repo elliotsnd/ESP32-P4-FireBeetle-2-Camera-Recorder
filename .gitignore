@@ -5,3 +5,45 @@ __pycache__/
 *.pyc
 .vscode/
 *.bin
+
+# Log/serial capture files
+boot_log.txt
+boot_out.txt
+boot_output.txt
+serial_capture.txt
+serial_out.txt
+serial_out2.txt
+test_output_*.txt
+
+# Auto-generated
+dependencies.lock
+
+# Reference projects
+M5Tab5-UserDemo/
+
+# Old test/dev files (kept locally, not tracked)
+camera_simple_test.c
+camera_test_main.c
+csi_capture_main.c
+csi_debug_main.c
+csi_full_init.c
+csi_led_debug.c
+csi_nopsram.c
+csi_testpattern.c
+i2c_recover.c
+sd_cam_test.c
+main/csi_capture_main.c
+main/led_blink.c
+main/main.c
+main/wifi_tcp_test.c
+
+# Utility scripts
+monitor.py
+flash_monitor.py
+read_serial.py
+reset_read.py
+reset_read2.py
+usb_video_viewer.py
+fix_avi.py
+repair_avi.py
+avi_audio_check.py

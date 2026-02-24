@@ -1,0 +1,3 @@
+[submodule "components/esp-video-components"]
+	path = components/esp-video-components
+	url = https://github.com/GuilhermeRS11/esp-video-components.git

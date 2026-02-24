@@ -55,6 +55,7 @@
 #include "soc/mipi_csi_host_struct.h"
 #include "soc/isp_struct.h"
 #include "soc/dw_gdma_struct.h"
+#include "soc/hp_sys_clkrst_struct.h"
 
 static const char *TAG = "CAM_REC";
 
@@ -162,6 +163,14 @@ static void dump_csi_diagnostics(void)
              (int)((isp_raw >> 14) & 1),   // frame_int_raw
              (int)((isp_raw >> 28) & 1));  // header_idi_frame_int_raw
 
+    // ISP frame dimensions and clock diagnostics
+    ESP_LOGW(TAG, "ISP frame_cfg: hadr_num=%lu vadr_num=%lu",
+             (unsigned long)ISP.frame_cfg.hadr_num,
+             (unsigned long)ISP.frame_cfg.vadr_num);
+    uint32_t isp_clk_div = HP_SYS_CLKRST.peri_clk_ctrl26.reg_isp_clk_div_num;
+    ESP_LOGW(TAG, "ISP clk_div_num=%lu (actual ISP clk ~%lu MHz)",
+             (unsigned long)isp_clk_div, (unsigned long)(160 / (isp_clk_div + 1)));
+
     // DW GDMA channel status - scan all 4 channels to find CSI DMA
     uint32_t chen = DW_GDMA.chen0.val;
     ESP_LOGW(TAG, "DMA chen0=0x%08lx [ch1_en=%d ch2_en=%d ch3_en=%d ch4_en=%d]",
@@ -223,6 +232,7 @@ static void dump_csi_diagnostics(void)
 #define DIAG_USE_720P       0   // 1 = override resolution to 720p (less memory, less MIPI bandwidth)
 #define DIAG_LOW_BITRATE    0   // 1 = drop H.264 bitrate to 6 Mbps
 #define DIAG_NO_AUDIO       0   // 1 = skip PDM mic init and audio capture entirely
+#define DIAG_USE_1080P15    1   // 1 = 1664×928@30fps (72% FOV)  0 = 1536×864@30fps (67% FOV)
 
 // ============================================================================
 // CONFIGURATION
@@ -231,7 +241,7 @@ static void dump_csi_diagnostics(void)
 #if DIAG_LOW_BITRATE
 #define H264_BITRATE        4000000   // 4 Mbps (reduced for diagnostics)
 #else
-#define H264_BITRATE        8000000   // 8 Mbps target bitrate (720p)
+#define H264_BITRATE        8000000   // 8 Mbps target bitrate
 #endif
 #define H264_GOP            12        // I-frame every 12 frames (~1s) — limits pink artifact duration from corrupted refs
 #define H264_MIN_QP         20        // Min QP (lower = better quality)
@@ -242,7 +252,11 @@ static void dump_csi_diagnostics(void)
 #define NUM_CAP_BUFFERS     4       // Reduced from 6: 2304x1296 buffers are 4.5MB each
 #define NUM_M2M_CAP_BUFS    1       // V4L2 M2M capture buffer (single; driver limitation)
 #define NUM_JPEG_BUFS       30      // Rotating PSRAM staging buffers - absorb SD card write latency spikes
-#define JPEG_BUF_SIZE       (96 * 1024)   // 96KB per buffer (H.264 frames ~40-70KB at 1536x864)
+#if DIAG_USE_1080P15
+#define JPEG_BUF_SIZE       (192 * 1024)  // 192KB per buffer (H.264 I-frames ~100-150KB at 1920×1080)
+#else
+#define JPEG_BUF_SIZE       (96 * 1024)   // 96KB per buffer (H.264 frames ~40-70KB at 1536×864)
+#endif
 #define SKIP_STARTUP_FRAMES 30      // Skip startup frames for AEC/AGC settling (~1s at 30fps)
 
 // Audio (onboard PDM mic)
@@ -327,6 +341,11 @@ static volatile int total_written = 0;
 static volatile int total_dropped = 0;
 static bool sd_card_available = false;
 
+// Task handles for stack watermark monitoring
+static TaskHandle_t sd_write_task_handle = NULL;
+static TaskHandle_t capture_task_handle = NULL;
+static TaskHandle_t audio_task_handle = NULL;
+
 // Audio globals
 static i2s_chan_handle_t i2s_rx_handle = NULL;
 #define AUDIO_DMA_BUF_SIZE  1024     // DMA buffer size in samples
@@ -345,51 +364,144 @@ static uint32_t ppa_scaled_buf_size = 0;
 
 // ============================================================================
 // CUSTOM WIDE FOV SENSOR MODE
-// Strategy: Use the EXACT working 720p register set but widen the digital crop
-// from 1280x720 to 1536x864 (RPi's proven "720p" resolution).
+// Strategy: Use the EXACT working 720p register set but widen the digital crop.
 // This keeps all proven-working PLL, binning, and scaling registers.
-// FRM_LENGTH calculated for 30fps: 96,400,000 / (30 × 864) = 3722 = 0x0E8A
-// The crop is genuine (offset 384,216 from 2304x1296) so 0x3200=0x43 stays valid.
-// PPA scaler then downscales 1536x864 → 1280x720 for H.264 encoding.
-// FOV: 67% of full sensor width (vs 56% with 1280x720 crop).
+// The crop is genuine (offset from 2304x1296 binned) so 0x3200=0x43 stays valid.
+//
+// 180° rotation via reg 0x0101 (IMAGE_ORIENTATION): bit0=H_MIRROR, bit1=V_FLIP.
+// Confirmed from: imx708_regs.h (#define IMX708_REG_ORIENTATION 0x0101),
+//   imx708.c (imx708_set_hmirror/vflip both use 0x0101),
+//   RPi ref driver (#define IMX708_REG_ORIENTATION 0x101).
+// Bayer order changes with rotation: RGGB → BGGR (per RPi driver codes[] table).
+//
+// Two modes available via DIAG_USE_1080P15 toggle:
+//   0 (default): 1536×864 @ 30fps — 67% sensor FOV, 1.9 MB/frame, proven stable
+//   1:           1920×1080 @ 30fps — 83% sensor FOV, ~3.1 MB/frame, scale-only mode
+//                Previous 1648 limit was due to crop mode (0x43) stalling;
+//                scale-only (0x41) handles full 1920 width fine.
 // ============================================================================
+// DIAG_USE_1080P15 defined above (before JPEG_BUF_SIZE which depends on it)
 
 typedef struct { uint16_t reg; uint8_t val; } custom_reginfo_t;
 
-// Identical to working imx708_1280x720_regs EXCEPT crop/output = 1536x864
-static const custom_reginfo_t custom_imx708_1536x864_regs[] = {
-    // --- Timing: LINE_LENGTH from 720p, FRM_LENGTH calculated for 30fps ---
-    // Formula: FRM_LENGTH = 96,400,000 / (fps × y_output) = 96,400,000 / (30 × 864) = 3722
+// --- Shared register block: PLL, binning, analog readout, exposure (identical to 720p) ---
+// Only FRM_LENGTH, digital crop, output size, and orientation differ between modes.
+
+#if DIAG_USE_1080P15
+// 1920×1080 @ 30fps: 83% sensor FOV, ~3.1 MB/frame
+// Scale-only mode (0x41) — matches built-in imx708_1920x1080_regs.
+// afull_thrd patched from 960→2040 at runtime to prevent mid-line backpressure.
+// Digital crop: center 1920×1080 in 2304×1296 binned (offset 192,108)
+static const custom_reginfo_t custom_imx708_regs[] = {
+    // --- Timing ---
+    {0x0342, 0x31},  // LINE_LENGTH_PCK (12740)
+    {0x0343, 0xC4},
+    {0x0340, 0x0D},  // FRM_LENGTH_LINES (3500 = 0x0DAC) — 30fps
+    {0x0341, 0xAC},
+    // --- Analog readout: full sensor ---
+    {0x0344, 0x00}, {0x0345, 0x00},  // X_ADDR_START (0)
+    {0x0346, 0x00}, {0x0347, 0x00},  // Y_ADDR_START (0)
+    {0x0348, 0x11}, {0x0349, 0xFF},  // X_ADDR_END (4607)
+    {0x034A, 0x0A}, {0x034B, 0x1F},  // Y_ADDR_END (2591)
+    // --- Exposure/misc ---
+    {0x0220, 0x62}, {0x0222, 0x01},
+    // --- Binning: 2×2, averaged weighting (matches built-in 1920×1080) ---
+    {0x0900, 0x01}, {0x0901, 0x22}, {0x0902, 0x08},
+    // --- Scaling: scale-only mode (matches built-in 1920×1080; crop mode 0x43 stalls) ---
+    {0x3200, 0x41}, {0x3201, 0x41}, {0x32D5, 0x00}, {0x32D6, 0x00},
+    {0x32DB, 0x01}, {0x32DF, 0x00}, {0x350C, 0x00}, {0x350D, 0x00},
+    // --- Digital crop: 1920×1080 centered in 2304×1296 ---
+    {0x0408, 0x00},  // DIG_CROP_X_OFFSET = (2304-1920)/2 = 192 = 0x00C0
+    {0x0409, 0xC0},
+    {0x040A, 0x00},  // DIG_CROP_Y_OFFSET = (1296-1080)/2 = 108 = 0x006C
+    {0x040B, 0x6C},
+    {0x040C, 0x07},  // DIG_CROP_IMAGE_WIDTH = 1920 = 0x0780
+    {0x040D, 0x80},
+    {0x040E, 0x04},  // DIG_CROP_IMAGE_HEIGHT = 1080 = 0x0438
+    {0x040F, 0x38},
+    // --- Output size = 1920×1080 ---
+    {0x034C, 0x07}, {0x034D, 0x80},  // X_OUTPUT_SIZE = 1920
+    {0x034E, 0x04}, {0x034F, 0x38},  // Y_OUTPUT_SIZE = 1080
+    // --- PLL: identical to 720p ---
+    {0x0301, 0x05}, {0x0303, 0x02}, {0x0305, 0x02},
+    {0x0306, 0x00}, {0x0307, 0x7C}, {0x030B, 0x02},
+    {0x030D, 0x04}, {0x0310, 0x01},
+    // --- MIPI DPHY timing (from built-in 1920×1080 / RPi mode_2x2binned_regs) ---
+    {0x3CA0, 0x00}, {0x3CA1, 0x3C}, {0x3CA4, 0x00}, {0x3CA5, 0x3C},
+    {0x3CA6, 0x00}, {0x3CA7, 0x00}, {0x3CAA, 0x00}, {0x3CAB, 0x00},
+    {0x3CB8, 0x00}, {0x3CB9, 0x1C}, {0x3CBA, 0x00}, {0x3CBB, 0x08},
+    {0x3CBC, 0x00}, {0x3CBD, 0x1E}, {0x3CBE, 0x00}, {0x3CBF, 0x0A},
+    // --- Exposure/gain ---
+    {0x0202, 0x05}, {0x0203, 0xAC},
+    {0x0204, 0x00}, {0x0205, 0x00},
+    {0x020E, 0x01}, {0x020F, 0x00},
+    // --- HDR integration/gain defaults (from built-in 1920×1080) ---
+    {0x0224, 0x01}, {0x0225, 0xF4},  // SHORT_INTEGRATION_TIME
+    {0x3116, 0x01}, {0x3117, 0xF4},  // MID_INTEGRATION_TIME
+    {0x0216, 0x00}, {0x0217, 0x00},  // SHORT_ANALOG_GAIN
+    {0x0218, 0x01}, {0x0219, 0x00},
+    {0x3118, 0x00}, {0x3119, 0x00},  // MID_ANALOG_GAIN
+    {0x311A, 0x01}, {0x311B, 0x00},
+    // --- QBC / blanking (from built-in 1920×1080) ---
+    {0x341A, 0x00}, {0x341B, 0x00}, {0x341C, 0x00}, {0x341D, 0x00},
+    {0x341E, 0x00}, {0x341F, 0x78},  // QBC width = 1920/16 = 120 = 0x78
+    {0x3420, 0x00}, {0x3421, 0x5A},  // QBC height = 1080/12 = 90 = 0x5A
+    {0x3366, 0x00}, {0x3367, 0x00}, {0x3368, 0x00}, {0x3369, 0x00},
+    // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
+    {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
+    {0xFFFF, 0x00}
+};
+
+static const esp_cam_sensor_isp_info_t custom_isp_info = {
+    .isp_v1_info = {
+        .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+        .pclk = 182400000,
+        .vts = 3500,
+        .hts = 12740,
+        .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,
+    }
+};
+
+static const esp_cam_sensor_format_t custom_wide_format = {
+    .name = "MIPI_2lane_24Minput_RAW10_1920x1080",
+    .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+    .port = ESP_CAM_SENSOR_MIPI_CSI,
+    .xclk = 24000000,
+    .width = 1920,
+    .height = 1080,
+    .regs = custom_imx708_regs,
+    .regs_size = ARRAY_SIZE(custom_imx708_regs),
+    .fps = 30,
+    .isp_info = &custom_isp_info,
+    .mipi_info = {
+        .mipi_clk = 450000000,
+        .lane_num = 2,
+        .line_sync_en = false,
+    },
+    .reserved = NULL,
+};
+
+#else /* Default: 1536×864 @ 30fps */
+
+static const custom_reginfo_t custom_imx708_regs[] = {
+    // --- Timing: LINE_LENGTH from 720p, FRM_LENGTH for 30fps ---
     {0x0342, 0x31},  // LINE_LENGTH_PCK (12740, same as 720p)
     {0x0343, 0xC4},
-    {0x0340, 0x0E},  // FRM_LENGTH_LINES (3722 = 0x0E8A) — 30fps at 864p
+    {0x0340, 0x0E},  // FRM_LENGTH_LINES (3722 = 0x0E8A) — 30fps
     {0x0341, 0x8A},
-    // --- Analog readout: full sensor, identical to 720p ---
-    {0x0344, 0x00},  // X_ADDR_START (0)
-    {0x0345, 0x00},
-    {0x0346, 0x00},  // Y_ADDR_START (0)
-    {0x0347, 0x00},
-    {0x0348, 0x11},  // X_ADDR_END (4607)
-    {0x0349, 0xFF},
-    {0x034A, 0x0A},  // Y_ADDR_END (2591)
-    {0x034B, 0x1F},
-    // --- Exposure/misc: identical to 720p ---
-    {0x0220, 0x62},
-    {0x0222, 0x01},
-    // --- Binning: identical to 720p ---
-    {0x0900, 0x01},  // BINNING_MODE enabled
-    {0x0901, 0x22},  // BINNING_TYPE 2x2
-    {0x0902, 0x0A},  // BINNING_WEIGHTING (summed, same as 720p)
-    // --- Scaling: identical to 720p (0x43 = crop mode, valid for genuine crop) ---
-    {0x3200, 0x43},
-    {0x3201, 0x43},
-    {0x32D5, 0x43},
-    {0x32D6, 0x00},
-    {0x32DB, 0x01},
-    {0x32DF, 0x00},
-    {0x350C, 0x00},
-    {0x350D, 0x00},
-    // --- CHANGED: Digital crop 1536x864 centered in 2304x1296 ---
+    // --- Analog readout: full sensor ---
+    {0x0344, 0x00}, {0x0345, 0x00},  // X_ADDR_START (0)
+    {0x0346, 0x00}, {0x0347, 0x00},  // Y_ADDR_START (0)
+    {0x0348, 0x11}, {0x0349, 0xFF},  // X_ADDR_END (4607)
+    {0x034A, 0x0A}, {0x034B, 0x1F},  // Y_ADDR_END (2591)
+    // --- Exposure/misc ---
+    {0x0220, 0x62}, {0x0222, 0x01},
+    // --- Binning: 2×2, averaged weighting (matches 1920×1080 built-in) ---
+    {0x0900, 0x01}, {0x0901, 0x22}, {0x0902, 0x08},
+    // --- Scaling: scale-only mode (matches 1920×1080 built-in; crop mode 0x43 stalls) ---
+    {0x3200, 0x41}, {0x3201, 0x41}, {0x32D5, 0x00}, {0x32D6, 0x00},
+    {0x32DB, 0x01}, {0x32DF, 0x00}, {0x350C, 0x00}, {0x350D, 0x00},
+    // --- Digital crop: 1536×864 centered in 2304×1296 ---
     {0x0408, 0x01},  // DIG_CROP_X_OFFSET = (2304-1536)/2 = 384 = 0x0180
     {0x0409, 0x80},
     {0x040A, 0x00},  // DIG_CROP_Y_OFFSET = (1296-864)/2 = 216 = 0x00D8
@@ -398,38 +510,29 @@ static const custom_reginfo_t custom_imx708_1536x864_regs[] = {
     {0x040D, 0x00},
     {0x040E, 0x03},  // DIG_CROP_IMAGE_HEIGHT = 864 = 0x0360
     {0x040F, 0x60},
-    // --- CHANGED: Output size = 1536x864 ---
-    {0x034C, 0x06},  // X_OUTPUT_SIZE = 1536
-    {0x034D, 0x00},
-    {0x034E, 0x03},  // Y_OUTPUT_SIZE = 864
-    {0x034F, 0x60},
+    // --- Output size = 1536×864 ---
+    {0x034C, 0x06}, {0x034D, 0x00},  // X_OUTPUT_SIZE = 1536
+    {0x034E, 0x03}, {0x034F, 0x60},  // Y_OUTPUT_SIZE = 864
     // --- PLL: identical to 720p ---
-    {0x0301, 0x05},
-    {0x0303, 0x02},
-    {0x0305, 0x02},
-    {0x0306, 0x00},
-    {0x0307, 0x7C},
-    {0x030B, 0x02},
-    {0x030D, 0x04},
-    {0x0310, 0x01},
-    // --- Exposure/gain: identical to 720p ---
-    {0x0202, 0x05},  // COARSE_INTEGRATION_TIME (same as 720p)
-    {0x0203, 0xAC},
-    {0x0204, 0x00},  // ANALOG_GAIN
-    {0x0205, 0x00},
-    {0x020E, 0x01},  // DIGITAL_GAIN
-    {0x020F, 0x00},
-    {0xFFFF, 0x00}   // Sentinel (IMX708_REG_END)
+    {0x0301, 0x05}, {0x0303, 0x02}, {0x0305, 0x02},
+    {0x0306, 0x00}, {0x0307, 0x7C}, {0x030B, 0x02},
+    {0x030D, 0x04}, {0x0310, 0x01},
+    // --- Exposure/gain ---
+    {0x0202, 0x05}, {0x0203, 0xAC},
+    {0x0204, 0x00}, {0x0205, 0x00},
+    {0x020E, 0x01}, {0x020F, 0x00},
+    // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
+    {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
+    {0xFFFF, 0x00}
 };
 
-// ISP info: use 720p timing values since readout timing is identical
 static const esp_cam_sensor_isp_info_t custom_isp_info = {
     .isp_v1_info = {
         .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
         .pclk = 182400000,
         .vts = 3722,
         .hts = 12740,
-        .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,  // RGGB → BGGR with 180° rotation
     }
 };
 
@@ -440,8 +543,8 @@ static const esp_cam_sensor_format_t custom_wide_format = {
     .xclk = 24000000,
     .width = 1536,
     .height = 864,
-    .regs = custom_imx708_1536x864_regs,
-    .regs_size = ARRAY_SIZE(custom_imx708_1536x864_regs),
+    .regs = custom_imx708_regs,
+    .regs_size = ARRAY_SIZE(custom_imx708_regs),
     .fps = 30,
     .isp_info = &custom_isp_info,
     .mipi_info = {
@@ -451,6 +554,7 @@ static const esp_cam_sensor_format_t custom_wide_format = {
     },
     .reserved = NULL,
 };
+#endif /* DIAG_USE_1080P15 */
 
 // ============================================================================
 // LED
@@ -594,14 +698,36 @@ static esp_err_t init_video_pipeline(void)
     ESP_LOGI(TAG, "Camera device: %s (fd=%d)", ESP_VIDEO_MIPI_CSI_DEVICE_NAME, recorder->cap_fd);
     print_video_caps(recorder->cap_fd);
 
-    // Apply custom wide-FOV sensor format: 1920x1080 crop from 2304x1296 binned.
-    // Uses EXACT 720p register timing, only crop/output registers change.
-    // Genuine crop (offset 192,108) so 0x3200=0x43 stays valid.
+    // Apply custom sensor format with 180° rotation (reg 0x0101=0x03).
+    // Uses scale-only mode (0x41) matching 1920×1080 built-in — crop mode (0x43) stalls.
     if (ioctl(recorder->cap_fd, VIDIOC_S_SENSOR_FMT, &custom_wide_format) != 0) {
-        ESP_LOGW(TAG, "Custom wide-FOV format failed (%s), falling back to default",
+        ESP_LOGW(TAG, "Custom sensor format failed (%s), falling back to default",
                  strerror(errno));
     } else {
-        ESP_LOGI(TAG, "Custom wide-FOV format applied: 1536x864 (67%% sensor FOV)");
+#if DIAG_USE_1080P15
+        ESP_LOGI(TAG, "Custom format applied: 1920x1080@30fps scale-only mode (83%% FOV, 180° rot)");
+#else
+        ESP_LOGI(TAG, "Custom format applied: 1536x864@30fps (67%% sensor FOV, 180° rotated)");
+#endif
+    }
+
+    // Verify: read back sensor format to confirm custom regs took effect
+    {
+        esp_cam_sensor_format_t readback_fmt;
+        memset(&readback_fmt, 0, sizeof(readback_fmt));
+        if (ioctl(recorder->cap_fd, VIDIOC_G_SENSOR_FMT, &readback_fmt) == 0) {
+            ESP_LOGI(TAG, "[DIAG] Sensor readback: %dx%d @ %dfps, name='%s'",
+                     readback_fmt.width, readback_fmt.height, readback_fmt.fps,
+                     readback_fmt.name ? readback_fmt.name : "(null)");
+            if (readback_fmt.width != custom_wide_format.width ||
+                readback_fmt.height != custom_wide_format.height) {
+                ESP_LOGW(TAG, "[DIAG] FORMAT MISMATCH! Expected %dx%d, got %dx%d",
+                         custom_wide_format.width, custom_wide_format.height,
+                         readback_fmt.width, readback_fmt.height);
+            }
+        } else {
+            ESP_LOGW(TAG, "[DIAG] G_SENSOR_FMT not supported (%s)", strerror(errno));
+        }
     }
 
     // Get sensor's format (custom if applied, or default from menuconfig)
@@ -613,7 +739,8 @@ static esp_err_t init_video_pipeline(void)
     }
     recorder->width = init_fmt.fmt.pix.width;
     recorder->height = init_fmt.fmt.pix.height;
-    ESP_LOGI(TAG, "Sensor default: %" PRIu32 "x%" PRIu32, recorder->width, recorder->height);
+    ESP_LOGI(TAG, "Pipeline format: %" PRIu32 "x%" PRIu32 " (should match custom format)",
+             recorder->width, recorder->height);
 
 #if DIAG_USE_720P
     recorder->width = 1280;
@@ -669,6 +796,22 @@ static esp_err_t init_video_pipeline(void)
     }
     ESP_LOGI(TAG, "Camera format set: %" PRIu32 "x%" PRIu32 " %.4s",
              fmt.fmt.pix.width, fmt.fmt.pix.height, (char *)&fmt.fmt.pix.pixelformat);
+
+    // Verify effective crop at runtime
+    {
+        struct v4l2_crop crop = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+        if (ioctl(recorder->cap_fd, VIDIOC_G_CROP, &crop) == 0) {
+            ESP_LOGI(TAG, "Effective crop: %" PRIu32 "x%" PRIu32 " at (%" PRId32 ",%" PRId32 ")",
+                     (uint32_t)crop.c.width, (uint32_t)crop.c.height,
+                     (int32_t)crop.c.left, (int32_t)crop.c.top);
+            if ((uint32_t)crop.c.width != recorder->width || (uint32_t)crop.c.height != recorder->height) {
+                ESP_LOGW(TAG, "Crop mismatch! Expected %" PRIu32 "x%" PRIu32,
+                         recorder->width, recorder->height);
+            }
+        } else {
+            ESP_LOGW(TAG, "VIDIOC_G_CROP not supported: %s", strerror(errno));
+        }
+    }
 
     // Request camera capture buffers
     struct v4l2_requestbuffers req = {
@@ -1001,6 +1144,7 @@ static void audio_capture_task(void *arg)
     audio_running = false;
     free(read_buf);
     ESP_LOGI(TAG, "Audio capture stopped");
+    audio_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
@@ -1758,6 +1902,7 @@ static void sd_write_task(void *arg)
     gpio_set_level(LED_PIN, 0);
     led_blink(5, 150);
 
+    sd_write_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
@@ -1791,9 +1936,10 @@ static void capture_task(void *arg)
     int captured = 0;
     int dropped = 0;
     int skipped = 0;
+    int consecutive_dqbuf_fails = 0;
     int64_t encode_interval_us = 1000000 / AVI_FPS;  // min time between encodes
     int64_t last_encode_us = 0;
-
+    int64_t last_csi_check_us = 0;
 
     ESP_LOGI(TAG, "Capture: starting %d second recording", RECORD_DURATION_SEC);
     capture_running = true;
@@ -1804,16 +1950,50 @@ static void capture_task(void *arg)
         struct v4l2_buffer m2m_out_buf;
         struct v4l2_buffer m2m_cap_buf;
 
+        // Periodic CSI health check: detect pkt_fatal and attempt recovery
+        int64_t now_check = esp_timer_get_time();
+        if (now_check - last_csi_check_us > 2000000) {  // every 2 seconds
+            last_csi_check_us = now_check;
+            uint32_t pkt_fatal = MIPI_CSI_HOST.int_st_pkt_fatal.val;
+            uint32_t phy_fatal = MIPI_CSI_HOST.int_st_phy_fatal.val;
+            if (pkt_fatal || phy_fatal) {
+                ESP_LOGW(TAG, "CSI errors detected: pkt_fatal=0x%lx phy_fatal=0x%lx (cap=%d) — attempting STREAMOFF/ON recovery",
+                         (unsigned long)pkt_fatal, (unsigned long)phy_fatal, captured);
+                // STREAMOFF/STREAMON cycle to reset CSI/DMA pipeline
+                int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+                ioctl(recorder->cap_fd, VIDIOC_STREAMOFF, &type);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                // Re-queue all capture buffers
+                for (int i = 0; i < NUM_CAP_BUFFERS; i++) {
+                    struct v4l2_buffer rebuf = {
+                        .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                        .memory = V4L2_MEMORY_MMAP,
+                        .index = i,
+                    };
+                    ioctl(recorder->cap_fd, VIDIOC_QBUF, &rebuf);
+                }
+                ioctl(recorder->cap_fd, VIDIOC_STREAMON, &type);
+                ESP_LOGI(TAG, "CSI recovery: STREAMOFF/ON complete, resuming capture");
+            }
+        }
+
         // DQBUF from camera - blocks until frame ready
         memset(&cap_buf, 0, sizeof(cap_buf));
         cap_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         cap_buf.memory = V4L2_MEMORY_MMAP;
 
         if (ioctl(recorder->cap_fd, VIDIOC_DQBUF, &cap_buf) != 0) {
-            ESP_LOGE(TAG, "DQBUF fail: %s", strerror(errno));
+            consecutive_dqbuf_fails++;
+            ESP_LOGE(TAG, "DQBUF fail: %s (consecutive=%d)", strerror(errno), consecutive_dqbuf_fails);
+            if (consecutive_dqbuf_fails >= 10) {
+                ESP_LOGE(TAG, "Too many consecutive DQBUF failures, dumping CSI diagnostics");
+                dump_csi_diagnostics();
+                consecutive_dqbuf_fails = 0;
+            }
             vTaskDelay(1);
             continue;
         }
+        consecutive_dqbuf_fails = 0;
 
         captured++;
         total_captured = captured;
@@ -1958,6 +2138,7 @@ static void capture_task(void *arg)
     ESP_LOGI(TAG, "Capture done: %d frames in %.1fs (%.1f FPS), skipped=%d, dropped=%d",
              captured, elapsed, elapsed > 0 ? captured / elapsed : 0, skipped, dropped);
 
+    capture_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
@@ -2200,7 +2381,13 @@ static esp_err_t start_streaming(void)
             i2c_master_dev_handle_t cam_dev = NULL;
             if (i2c_master_bus_add_device(i2c_bus_handle, &cam_cfg, &cam_dev) == ESP_OK) {
                 uint8_t stream_off[] = { 0x01, 0x00, 0x00 }; // reg 0x0100 = 0x00
-                i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+                esp_err_t tx_ret = i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+                if (tx_ret != ESP_OK) {
+                    ESP_LOGW(TAG, "LP-11 stream-off I2C failed (0x%x), resetting bus...", tx_ret);
+                    i2c_master_bus_reset(i2c_bus_handle);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+                }
                 i2c_master_bus_rm_device(cam_dev);
                 ESP_LOGI(TAG, "Sensor stream-off sent, waiting 250ms for LP-11...");
                 vTaskDelay(pdMS_TO_TICKS(250));
@@ -2211,6 +2398,25 @@ static esp_err_t start_streaming(void)
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "start_all_streams failed: 0x%x", ret);
             continue;
+        }
+
+        // Override CSI bridge afull_thrd: ESP-IDF hardcodes 960, but at 1920px width
+        // half a line = 960, causing backpressure mid-line on every line → pkt_fatal.
+        // Register default is 2040 (14-bit field, max 16383).
+        {
+            uint32_t old_thrd = MIPI_CSI_BRIDGE.buf_flow_ctl.csi_buf_afull_thrd;
+            MIPI_CSI_BRIDGE.buf_flow_ctl.csi_buf_afull_thrd = 2040;
+            ESP_LOGI(TAG, "CSI bridge afull_thrd: %lu -> 2040", (unsigned long)old_thrd);
+        }
+
+        // Log ISP frame dimensions and clock rate
+        {
+            uint32_t h = ISP.frame_cfg.hadr_num;
+            uint32_t v = ISP.frame_cfg.vadr_num;
+            uint32_t div = HP_SYS_CLKRST.peri_clk_ctrl26.reg_isp_clk_div_num;
+            ESP_LOGI(TAG, "ISP frame_cfg: hadr=%lu vadr=%lu, clk_div=%lu (ISP clk ~%lu MHz)",
+                     (unsigned long)h, (unsigned long)v,
+                     (unsigned long)div, (unsigned long)(160 / (div + 1)));
         }
 
         int64_t t_streamon = esp_timer_get_time();
@@ -2352,13 +2558,41 @@ static esp_err_t start_streaming(void)
         if (!aec_got_frame) {
             ESP_LOGE(TAG, "AEC frame %d HUNG after 1000ms! Dumping diagnostics...", i + 1);
             dump_csi_diagnostics();
-            // Wait another 500ms and check if ISR counter changed
-            uint32_t fin_before = csi_isr_trans_finished_cnt;
-            vTaskDelay(pdMS_TO_TICKS(500));
-            ESP_LOGW(TAG, "After 500ms wait: ISR finished %lu -> %lu (delta=%lu)",
-                     (unsigned long)fin_before,
-                     (unsigned long)csi_isr_trans_finished_cnt,
-                     (unsigned long)(csi_isr_trans_finished_cnt - fin_before));
+
+            // Extended GDMA/PHY sampling: 20 iterations × 100ms = 2s of continuous monitoring
+            ESP_LOGW(TAG, "=== EXTENDED GDMA/PHY SAMPLING (20 × 100ms) ===");
+            uint32_t prev_fifo = 0, prev_dep = 0, prev_fin = csi_isr_trans_finished_cnt;
+            for (int s = 0; s < 20; s++) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                uint32_t dep = MIPI_CSI_BRIDGE.buf_flow_ctl.csi_buf_depth;
+                uint32_t fin = csi_isr_trans_finished_cnt;
+                uint32_t newt = csi_isr_get_new_trans_cnt;
+                uint32_t drop = csi_isr_frame_dropped_cnt;
+                uint32_t qe = csi_isr_queue_empty_cnt;
+                uint32_t chen = DW_GDMA.chen0.val;
+                uint32_t fifo = 0, blk = 0, ch_int = 0;
+                for (int c = 0; c < 4; c++) {
+                    if (chen & (1 << c)) {
+                        fifo = DW_GDMA.ch[c].status1.data_left_in_fifo;
+                        blk = DW_GDMA.ch[c].status0.cmpltd_blk_tfr_size;
+                        ch_int = DW_GDMA.ch[c].int_st0.val;
+                        break;
+                    }
+                }
+                uint32_t pkt_fatal = MIPI_CSI_HOST.int_st_pkt_fatal.val;
+                uint32_t phy_fatal = MIPI_CSI_HOST.int_st_phy_fatal.val;
+                uint32_t hs = MIPI_CSI_HOST.phy_rx.phy_rxclkactivehs;
+                ESP_LOGW(TAG, "  [%2d] dep=%3lu fifo=%3lu(d%+ld) blk=%lu ch_int=0x%04lx fin=%lu new=%lu drop=%lu qe=%lu hs=%lu pkt=%lu phy=%lu",
+                         s, (unsigned long)dep, (unsigned long)fifo, (long)(fifo - prev_fifo),
+                         (unsigned long)blk, (unsigned long)ch_int,
+                         (unsigned long)fin, (unsigned long)newt,
+                         (unsigned long)drop, (unsigned long)qe,
+                         (unsigned long)hs, (unsigned long)pkt_fatal, (unsigned long)phy_fatal);
+                prev_fifo = fifo;
+                prev_dep = dep;
+                prev_fin = fin;
+            }
+            ESP_LOGW(TAG, "=== END EXTENDED SAMPLING ===");
             break;
         }
         ESP_LOGI(TAG, "  got AEC frame %d, continuing...", i + 1);
@@ -2398,9 +2632,10 @@ static void start_recording(void)
     }
 
     // Start SD write task on Core 1 (waits for pre-allocation + init)
-    // Priority 12: above ISP task (11) to prevent scheduling delays on write_done_sem
+    // Priority 14: highest of our tasks — SD writes must not be starved by encode/ISP
+    // Stack 12KB: FAT/VFS/SDMMC stack frames are deep (fsync, cluster chain walks)
     write_task_ready = xSemaphoreCreateBinary();
-    xTaskCreatePinnedToCore(sd_write_task, "sd_wr", 8192, NULL, 12, NULL, 1);
+    xTaskCreatePinnedToCore(sd_write_task, "sd_wr", 12288, NULL, 14, &sd_write_task_handle, 1);
     if (xSemaphoreTake(write_task_ready, pdMS_TO_TICKS(30000)) != pdTRUE) {
         ESP_LOGE(TAG, "Write task init timeout");
         recording = false;
@@ -2428,18 +2663,22 @@ static void start_recording(void)
         if (ioctl(recorder->cap_fd, VIDIOC_STREAMON, &type) != 0) {
             ESP_LOGE(TAG, "Camera STREAMON resume failed: %s", strerror(errno));
         } else {
-            ESP_LOGI(TAG, "Camera stream resumed");
+            // Re-apply afull_thrd override (CSI bridge re-init during STREAMON resets it to 960)
+            MIPI_CSI_BRIDGE.buf_flow_ctl.csi_buf_afull_thrd = 2040;
+            ESP_LOGI(TAG, "Camera stream resumed (afull_thrd=2040)");
         }
     }
 
     // Start capture+encode on Core 0
-    // Priority 13: above ISP task (11) so memcpy/encode aren't preempted by AE/AWB processing
-    xTaskCreatePinnedToCore(capture_task, "cap_enc", 8192, NULL, 13, NULL, 0);
+    // Priority 15: highest on Core 0 — camera DQBUF must not miss frames
+    // Stack 10KB: 3× struct v4l2_buffer on stack + ioctl call chains
+    xTaskCreatePinnedToCore(capture_task, "cap_enc", 10240, NULL, 15, &capture_task_handle, 0);
 
     // Start audio capture task on Core 1 (same core as SD write to avoid cross-core ring buffer contention)
+    // Priority 10: below SD write (14) and ISP (11), but above idle — audio is small periodic reads
 #if !DIAG_NO_AUDIO
     if (i2s_rx_handle) {
-        xTaskCreatePinnedToCore(audio_capture_task, "audio", 4096, NULL, 5, NULL, 1);
+        xTaskCreatePinnedToCore(audio_capture_task, "audio", 6144, NULL, 10, &audio_task_handle, 1);
     }
 #endif
 }
@@ -2516,12 +2755,27 @@ void app_main(void)
         if (pret == ESP_OK) {
             // 1. Force stream OFF  (reg 0x0100 = 0x00)
             uint8_t stream_off[] = { 0x01, 0x00, 0x00 };
-            i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+            esp_err_t tx_ret = i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+            if (tx_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Stream-off I2C failed (0x%x), resetting bus...", tx_ret);
+                i2c_master_bus_reset(i2c_bus_handle);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                tx_ret = i2c_master_transmit(cam_dev, stream_off, sizeof(stream_off), 100);
+                if (tx_ret != ESP_OK) {
+                    ESP_LOGE(TAG, "Stream-off retry failed (0x%x)", tx_ret);
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
 
             // 2. Software reset     (reg 0x0103 = 0x01) — clears PLLs & state machine
             uint8_t sw_reset[]  = { 0x01, 0x03, 0x01 };
-            i2c_master_transmit(cam_dev, sw_reset, sizeof(sw_reset), 100);
+            tx_ret = i2c_master_transmit(cam_dev, sw_reset, sizeof(sw_reset), 100);
+            if (tx_ret != ESP_OK) {
+                ESP_LOGW(TAG, "SW reset I2C failed (0x%x), resetting bus...", tx_ret);
+                i2c_master_bus_reset(i2c_bus_handle);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                i2c_master_transmit(cam_dev, sw_reset, sizeof(sw_reset), 100);
+            }
 
             // 3. Wait for MIPI PHY to power down and lanes to return to LP-11
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -2529,7 +2783,10 @@ void app_main(void)
             i2c_master_bus_rm_device(cam_dev);
             ESP_LOGI(TAG, "Camera silenced. MIPI lanes are clean.");
         } else {
-            ESP_LOGW(TAG, "Pre-emptive reset: could not reach IMX708 (0x%x) - fresh cold boot?", pret);
+            ESP_LOGW(TAG, "Pre-emptive reset: could not reach IMX708 (0x%x)", pret);
+            // Bus may be stuck — try a reset in case SDA is held low
+            i2c_master_bus_reset(i2c_bus_handle);
+            ESP_LOGI(TAG, "I2C bus reset attempted — may be fresh cold boot");
         }
     }
     // ---- END PRE-EMPTIVE CAMERA RESET ----
@@ -2638,5 +2895,19 @@ void app_main(void)
                  total_captured, total_written, total_dropped,
                  recording ? "YES" : "NO",
                  (unsigned long)esp_get_free_heap_size());
+
+        // Stack high-water-mark monitoring (minimum free stack bytes ever seen)
+        // Only check while recording — tasks self-delete after recording stops
+        if (recording && sd_write_task_handle) {
+            ESP_LOGI(TAG, "[Stack] sd_wr=%lu cap_enc=%lu audio=%lu",
+                     (unsigned long)uxTaskGetStackHighWaterMark(sd_write_task_handle) * sizeof(StackType_t),
+                     capture_task_handle ? (unsigned long)uxTaskGetStackHighWaterMark(capture_task_handle) * sizeof(StackType_t) : 0,
+                     audio_task_handle ? (unsigned long)uxTaskGetStackHighWaterMark(audio_task_handle) * sizeof(StackType_t) : 0);
+        }
+
+        // Heap integrity check (catches corruption early)
+        if (!heap_caps_check_integrity_all(false)) {
+            ESP_LOGE(TAG, "!!! HEAP CORRUPTION DETECTED !!!");
+        }
     }
 }
