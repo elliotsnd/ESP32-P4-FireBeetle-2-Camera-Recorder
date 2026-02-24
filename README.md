@@ -8,7 +8,7 @@ Records H.264 video with PDM microphone audio to AVI files on SD card.
 
 - **1920×1080 @ 30fps** MIPI CSI-2 capture via IMX708
 - **H.264 hardware encoding** using ESP32-P4's built-in encoder
-- **PDM microphone** audio recording (16-bit, 16kHz)
+- **PDM microphone** audio recording (16-bit, 16kHz) — mic is built into the FireBeetle 2 board
 - **AVI container** output to SD card (~5 FPS write throughput)
 - **Auto-focus** via DW9807 VCM
 
@@ -22,23 +22,26 @@ This guide assumes you're on **Windows** and have never used ESP-IDF before. Fol
 
 ### Step 1: Buy the Hardware
 
-You need all of these:
+You only need two things:
 
 | Part | Notes |
 |------|-------|
-| **FireBeetle 2 ESP32-P4** | Made by DFRobot. Has the ESP32-P4 chip with built-in H.264 encoder. |
+| **FireBeetle 2 ESP32-P4** | Made by DFRobot. Has the ESP32-P4 chip with built-in H.264 encoder, built-in PDM microphone, and MicroSD card slot. |
 | **Raspberry Pi Camera Module 3** | The standard (non-wide) version. Uses IMX708 sensor + DW9807 autofocus motor. Connects via 22-pin FPC cable. |
-| **22-pin to 15-pin FPC adapter cable** | The FireBeetle 2 has a 22-pin MIPI CSI connector. The RPi Camera 3 has a 15-pin connector. You need an adapter cable (sometimes included with the board). |
-| **MicroSD card** | Any size, must be formatted as **FAT32**. Class 10 or faster recommended. |
-| **PDM microphone breakout** | Any MEMS PDM mic module (e.g., INMP441, SPH0645). Connect CLK to GPIO 46, DATA to GPIO 47. **Optional** — the recorder works without it, audio will just be silence. |
-| **USB-C cable** | To connect the FireBeetle 2 to your PC for flashing and serial monitor. |
+
+You'll also need:
+- **MicroSD card** — any size, must be formatted as **FAT32**. Class 10 or faster recommended.
+- **USB-C cable** — to connect the board to your PC for flashing and monitoring.
+
+The FireBeetle 2 should come with a 22-pin FPC cable for the camera. If not, you need a 22-pin to 15-pin FPC adapter cable (the board has a 22-pin MIPI CSI connector, the camera has a 15-pin connector).
 
 ### Step 2: Connect the Hardware
 
 1. **Camera**: Plug the 22-pin end of the FPC cable into the FireBeetle 2's CSI connector. Plug the 15-pin end into the Camera Module 3. Make sure the contacts face the right way and the latches are closed.
 2. **SD card**: Insert a FAT32-formatted MicroSD card into the card slot on the FireBeetle 2.
-3. **Microphone** (optional): Wire your PDM mic — CLK to GPIO 46, DATA to GPIO 47, VCC to 3.3V, GND to GND.
-4. **USB**: Plug the FireBeetle 2 into your PC with a USB-C cable.
+3. **USB**: Plug the FireBeetle 2 into your PC with a USB-C cable.
+
+That's it — the microphone is already built into the board, no extra wiring needed.
 
 ### Step 3: Install Prerequisites on Windows
 
