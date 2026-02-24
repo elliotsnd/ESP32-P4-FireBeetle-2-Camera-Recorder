@@ -4,6 +4,8 @@
 
 Records H.264 video with PDM microphone audio to AVI files on SD card.
 
+> **⚠️ DISCLAIMER:** 100% of this project was built with AI (Claude Opus 4.6). No human has reviewed the code. Use at your own risk — but it worked for me.
+
 ## Features
 
 - **1920×1080 @ 30fps** MIPI CSI-2 capture via IMX708
