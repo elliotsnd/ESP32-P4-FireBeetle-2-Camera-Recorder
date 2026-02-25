@@ -1125,12 +1125,12 @@ static esp_err_t init_isp_white_balance(void)
         return ESP_FAIL;
     }
 
-    // White balance at neutral (1.0/1.0) — no gain adjustment.
-    // Let the sensor's native color balance come through.
+    // White balance initial gains from AWB target (~6200K daylight).
+    // IPA AWB will continuously refine these based on scene analysis.
     esp_video_isp_wb_t wb = {
         .enable = true,
-        .red_gain = 1.0,
-        .blue_gain = 1.0,
+        .red_gain = 0.90,
+        .blue_gain = 1.16,
     };
 
     struct v4l2_ext_control ctrl;
@@ -1171,14 +1171,14 @@ static esp_err_t init_isp_color(void)
     struct v4l2_ext_control ctrl;
     struct v4l2_ext_controls ctrls;
 
-    // --- 1. Color Correction Matrix — identity (passthrough) ---
-    // No color manipulation — let sensor native colors come through.
+    // --- 1. Color Correction Matrix — 6500K daylight from IPA config ---
+    // IPA will continuously adjust CCM based on detected color temperature.
     esp_video_isp_ccm_t ccm = {
         .enable = true,
         .matrix = {
-            { 1.0f, 0.0f, 0.0f },
-            { 0.0f, 1.0f, 0.0f },
-            { 0.0f, 0.0f, 1.0f },
+            { 0.99f, -0.02f, 0.03f },
+            { -0.04f, 1.08f, -0.05f },
+            { 0.00f, -0.16f, 1.16f },
         },
     };
 
@@ -1194,7 +1194,7 @@ static esp_err_t init_isp_color(void)
     if (ioctl(isp_fd, VIDIOC_S_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG, "Failed to set ISP CCM: %s", strerror(errno));
     } else {
-        ESP_LOGI(TAG, "ISP CCM set (identity — no color correction)");
+        ESP_LOGI(TAG, "ISP CCM set (6500K daylight)");
     }
 
     // --- 2. Gamma Correction — linear (disabled) ---
