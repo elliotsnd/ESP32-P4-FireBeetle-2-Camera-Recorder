@@ -1897,11 +1897,9 @@ static void sd_write_task(void *arg)
     uint32_t seg_audio_samples = 0;
     int64_t seg_start_us = esp_timer_get_time();
 
-    // Write AVI header
+    // Write AVI header (headers patched at finalization only — no mid-recording lseek)
     uint32_t movi_start = avi_write_header(fd, recorder->enc_width, recorder->enc_height, AVI_FPS);
     uint32_t current_pos = movi_start + 4;
-    avi_update_headers(fd, movi_start, current_pos, 0, 0, AVI_FPS);
-    fsync(fd);
 
     // Signal write task ready AFTER file is open + pre-allocated + header written.
     // Before this fix, the signal was given before the multi-file loop, so the
@@ -2020,31 +2018,25 @@ static void sd_write_task(void *arg)
         t_audwr_us = esp_timer_get_time() - t_aud_start;
 
         // Accumulate write task timing
-        static int64_t wt_vid_total = 0, wt_aud_total = 0, wt_sync_total = 0;
+        static int64_t wt_vid_total = 0, wt_aud_total = 0;
         static int wt_count = 0;
         wt_vid_total += t_vidwr_us;
         wt_aud_total += t_audwr_us;
         wt_count++;
 
         if (seg_written % 30 == 0) {
-            int64_t t_sync_start = esp_timer_get_time();
-
             float elapsed = (float)(esp_timer_get_time() - seg_start_us) / 1e6f;
-            uint32_t cur_fps = elapsed > 0 ? (uint32_t)(seg_written / elapsed + 0.5f) : AVI_FPS;
-            if (cur_fps < 1) cur_fps = 1;
 
-            // Update AVI headers in-place so file is playable if recording is interrupted
-            avi_update_headers(fd, movi_start, current_pos, seg_written, seg_audio_samples, cur_fps);
-            fsync(fd);  // force to SD card so file survives power loss
+            // Periodic header update for crash safety (playable if power lost)
+            uint32_t cur_pos = lseek(fd, 0, SEEK_CUR);
+            avi_update_headers(fd, movi_start, cur_pos, seg_written, seg_audio_samples,
+                               (uint32_t)(seg_written / elapsed + 0.5f));
+            fsync(fd);
 
-            int64_t t_sync_us = esp_timer_get_time() - t_sync_start;
-            wt_sync_total += t_sync_us;
-
-            ESP_LOGI(TAG, "WR_TIMING avg(ms): vid=%.1f aud=%.1f sync=%.1f [%d frames] last_sync=%lldms",
+            ESP_LOGI(TAG, "WR_TIMING avg(ms): vid=%.1f aud=%.1f [%d frames]",
                      wt_vid_total / 1000.0f / wt_count,
                      wt_aud_total / 1000.0f / wt_count,
-                     wt_sync_total / 1000.0f / (seg_written / 30),
-                     wt_count, t_sync_us / 1000);
+                     wt_count);
             if (awf_count > 0) {
                 ESP_LOGI(TAG, "  AWF breakdown: memcpy=%.1f write=%.1f (ms avg, %d calls)",
                          awf_memcpy_total_us / 1000.0f / awf_count,
