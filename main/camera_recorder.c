@@ -254,13 +254,23 @@ static void dump_csi_diagnostics(void)
 #define H264_MIN_QP         22        // Min QP — floor quality (lower=better, encoder starts at (min+max)/2=31)
 #define H264_MAX_QP         40        // Max QP — wide range lets RC converge without uint32_t overflow
 #define RECORD_DURATION_SEC 0         // 0 = continuous (until power loss or SD full)
-#define AVI_FPS             30        // Max encode rate (actual FPS patched into AVI header at finalization)
+#define AVI_FPS             15        // Match 15fps sensor rate (actual FPS patched into AVI header at finalization)
 
-#define NUM_CAP_BUFFERS     6       // DMA pipeline needs 3+ (writing/ISP/encode), 6 gives headroom
+// Encode resolution — what the H.264 encoder actually records.
+//   Set to 0,0 to match sensor (no crop, no PPA overhead).
+//   Set smaller than sensor for EIS crop margins (e.g. 1280x720 from 1920x1080).
+#define ENCODE_WIDTH        1280      // 1280x720 from 1080p sensor (EIS crop margins)
+#define ENCODE_HEIGHT       720       // 0,0 = same as sensor (no crop, but needs enough RAM for H.264 ref frames)
+// Common presets (uncomment one pair):
+//   #define ENCODE_WIDTH 1920  / #define ENCODE_HEIGHT 1080  — full 1080p, no crop
+//   #define ENCODE_WIDTH 1280  / #define ENCODE_HEIGHT  720  — 720p crop from 1080p (EIS)
+//   #define ENCODE_WIDTH  960  / #define ENCODE_HEIGHT  540  — 540p crop from 1080p (big EIS margin)
+
+#define NUM_CAP_BUFFERS     3       // DMA pipeline needs 3+ (writing/ISP/encode)
 #define NUM_M2M_CAP_BUFS    1       // V4L2 M2M capture buffer (single; driver limitation)
-#define NUM_STAGING_BUFS       30      // Rotating PSRAM staging buffers - 1s buffer at 30fps absorbs SD stalls
-#define STAGING_BUF_SIZE       (128 * 1024)  // 128KB per buffer (IDR frames can reach ~85KB)
-#define SKIP_STARTUP_FRAMES 30      // Skip startup frames for AEC/AGC settling (~1s at 30fps)
+#define NUM_STAGING_BUFS       3       // Rotating PSRAM staging buffers
+#define STAGING_BUF_SIZE       (384 * 1024)  // 384KB per buffer (IDR frames can reach ~85KB)
+#define SKIP_STARTUP_FRAMES 15      // Skip startup frames for AEC/AGC settling (~1s at 15fps)
 
 // Audio (onboard PDM mic)
 #define AUDIO_SAMPLE_RATE   16000   // 16kHz PCM
@@ -499,8 +509,8 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     // --- Timing: LINE_LENGTH from 720p, FRM_LENGTH for 30fps ---
     {0x0342, 0x31},  // LINE_LENGTH_PCK (12740, same as 720p)
     {0x0343, 0xC4},
-    {0x0340, 0x0B},  // FRM_LENGTH_LINES (2976 = 0x0BA0) — 30fps
-    {0x0341, 0xA0},  //   formula: 96400000 / (30 * 1080) = 2975.3 → 2976
+    {0x0340, 0x17},  // FRM_LENGTH_LINES (5952 = 0x1740) — 15fps
+    {0x0341, 0x40},  //   formula: 96400000 / (15 * 1080) ≈ 5952
     // --- Analog readout: full sensor ---
     {0x0344, 0x00}, {0x0345, 0x00},  // X_ADDR_START (0)
     {0x0346, 0x00}, {0x0347, 0x00},  // Y_ADDR_START (0)
@@ -529,10 +539,27 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     {0x0301, 0x05}, {0x0303, 0x02}, {0x0305, 0x02},
     {0x0306, 0x00}, {0x0307, 0x7C}, {0x030B, 0x02},
     {0x030D, 0x04}, {0x0310, 0x01},
+    // --- MIPI DPHY timing (from built-in 720p / RPi mode_2x2binned_regs) ---
+    {0x3CA0, 0x00}, {0x3CA1, 0x3C}, {0x3CA4, 0x00}, {0x3CA5, 0x3C},
+    {0x3CA6, 0x00}, {0x3CA7, 0x00}, {0x3CAA, 0x00}, {0x3CAB, 0x00},
+    {0x3CB8, 0x00}, {0x3CB9, 0x1C}, {0x3CBA, 0x00}, {0x3CBB, 0x08},
+    {0x3CBC, 0x00}, {0x3CBD, 0x1E}, {0x3CBE, 0x00}, {0x3CBF, 0x0A},
     // --- Exposure/gain ---
     {0x0202, 0x05}, {0x0203, 0xAC},
     {0x0204, 0x00}, {0x0205, 0x00},
     {0x020E, 0x01}, {0x020F, 0x00},
+    // --- HDR integration/gain defaults ---
+    {0x0224, 0x01}, {0x0225, 0xF4},
+    {0x3116, 0x01}, {0x3117, 0xF4},
+    {0x0216, 0x00}, {0x0217, 0x00},
+    {0x0218, 0x01}, {0x0219, 0x00},
+    {0x3118, 0x00}, {0x3119, 0x00},
+    {0x311A, 0x01}, {0x311B, 0x00},
+    // --- QBC / blanking ---
+    {0x341A, 0x00}, {0x341B, 0x00}, {0x341C, 0x00}, {0x341D, 0x00},
+    {0x341E, 0x00}, {0x341F, 0x78},  // QBC width = 1920/16 = 120 = 0x78
+    {0x3420, 0x00}, {0x3421, 0x5A},  // QBC height = 1080/12 = 90 = 0x5A
+    {0x3366, 0x00}, {0x3367, 0x00}, {0x3368, 0x00}, {0x3369, 0x00},
     // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
     {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
     {0xFFFF, 0x00}
@@ -542,14 +569,14 @@ static const esp_cam_sensor_isp_info_t custom_isp_info = {
     .isp_v1_info = {
         .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
         .pclk = 182400000,
-        .vts = 2976,
+        .vts = 5952,
         .hts = 12740,
         .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,  // RGGB → BGGR with 180° rotation
     }
 };
 
 static const esp_cam_sensor_format_t custom_wide_format = {
-    .name = "MIPI_2lane_24Minput_RAW10_1920x1080_wide",
+    .name = "MIPI_2lane_24Minput_RAW10_1920x1080_crisp",
     .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
     .port = ESP_CAM_SENSOR_MIPI_CSI,
     .xclk = 24000000,
@@ -557,7 +584,7 @@ static const esp_cam_sensor_format_t custom_wide_format = {
     .height = 1080,
     .regs = custom_imx708_regs,
     .regs_size = ARRAY_SIZE(custom_imx708_regs),
-    .fps = 30,
+    .fps = 15,
     .isp_info = &custom_isp_info,
     .mipi_info = {
         .mipi_clk = 450000000,
@@ -717,9 +744,9 @@ static esp_err_t init_video_pipeline(void)
                  strerror(errno));
     } else {
 #if DIAG_USE_1080P15
-        ESP_LOGI(TAG, "Custom format applied: 1920x1080@30fps scale-only mode (83%% FOV, 180° rot)");
+        ESP_LOGI(TAG, "Custom format applied: 1280x720@30fps scale-only mode (56%% FOV, 180° rot)");
 #else
-        ESP_LOGI(TAG, "Custom format applied: 1920x1080@30fps (83%% sensor FOV, 180° rotated)");
+        ESP_LOGI(TAG, "Custom format applied: 1920x1080@15fps (83%% sensor FOV, 180° rotated)");
 #endif
     }
 
@@ -760,43 +787,53 @@ static esp_err_t init_video_pipeline(void)
     ESP_LOGW(TAG, "DIAG: Overriding to 720p (%" PRIu32 "x%" PRIu32 ")", recorder->width, recorder->height);
 #endif
 
-    // Determine encoder dimensions.
-    // EIS mode: sensor captures 1536×864, PPA crops to 1280×720 with motion-compensated offsets.
-    // The 128px horizontal and 72px vertical margins provide stabilization range.
-    // PPA crop is 1:1 (no scaling) — avoids the PPA fractional scaling hang bug.
-    recorder->enc_width = 1280;
-    recorder->enc_height = 720;
-    ESP_LOGI(TAG, "EIS mode: sensor %" PRIu32 "x%" PRIu32 " → encode %" PRIu32 "x%" PRIu32
-             " (margins: %d×%d)",
-             recorder->width, recorder->height, recorder->enc_width, recorder->enc_height,
-             (int)(recorder->width - recorder->enc_width) / 2,
-             (int)(recorder->height - recorder->enc_height) / 2);
+    // Determine encoder dimensions from ENCODE_WIDTH/HEIGHT defines.
+    // 0 = match sensor (no crop, no PPA overhead). Otherwise PPA does 1:1 EIS crop.
+#if (ENCODE_WIDTH > 0 && ENCODE_HEIGHT > 0)
+    recorder->enc_width = ENCODE_WIDTH;
+    recorder->enc_height = ENCODE_HEIGHT;
+#else
+    recorder->enc_width = recorder->width;
+    recorder->enc_height = recorder->height;
+#endif
 
-    // Initialize PPA for EIS crop
-    ppa_client_config_t ppa_cfg = { .oper_type = PPA_OPERATION_SRM };
-    esp_err_t ppa_ret = ppa_register_client(&ppa_cfg, &ppa_srm_handle);
-    if (ppa_ret != ESP_OK) {
-        ESP_LOGE(TAG, "PPA register failed: 0x%x — EIS disabled, encoding at sensor native", ppa_ret);
-        ppa_srm_handle = NULL;
-        recorder->enc_width = recorder->width;
-        recorder->enc_height = recorder->height;
+    if (recorder->enc_width == recorder->width && recorder->enc_height == recorder->height) {
+        // No crop — encode at full sensor resolution, skip PPA entirely
+        ESP_LOGI(TAG, "No-crop mode: sensor %" PRIu32 "x%" PRIu32 " = encode %" PRIu32 "x%" PRIu32
+                 " (PPA disabled, no EIS)",
+                 recorder->width, recorder->height, recorder->enc_width, recorder->enc_height);
     } else {
-        // Allocate PPA output buffer: 1280×720 YUV420 = 1280*720*3/2
-        ppa_scaled_buf_size = recorder->enc_width * recorder->enc_height * 3 / 2;
-        // Align to L2 cache line (128 bytes) — PPA DMA requires both addr and size aligned
-        ppa_scaled_buf_size = (ppa_scaled_buf_size + 127) & ~127;
-        ppa_scaled_buf = heap_caps_aligned_calloc(128, 1, ppa_scaled_buf_size,
-                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!ppa_scaled_buf) {
-            ESP_LOGE(TAG, "PPA output buffer alloc failed (%lu bytes) — EIS disabled",
-                     (unsigned long)ppa_scaled_buf_size);
-            ppa_unregister_client(ppa_srm_handle);
+        ESP_LOGI(TAG, "EIS crop mode: sensor %" PRIu32 "x%" PRIu32 " → encode %" PRIu32 "x%" PRIu32
+                 " (margins: %d×%d)",
+                 recorder->width, recorder->height, recorder->enc_width, recorder->enc_height,
+                 (int)(recorder->width - recorder->enc_width) / 2,
+                 (int)(recorder->height - recorder->enc_height) / 2);
+
+        // Initialize PPA for EIS crop
+        ppa_client_config_t ppa_cfg = { .oper_type = PPA_OPERATION_SRM };
+        esp_err_t ppa_ret = ppa_register_client(&ppa_cfg, &ppa_srm_handle);
+        if (ppa_ret != ESP_OK) {
+            ESP_LOGE(TAG, "PPA register failed: 0x%x — encoding at sensor native", ppa_ret);
             ppa_srm_handle = NULL;
             recorder->enc_width = recorder->width;
             recorder->enc_height = recorder->height;
         } else {
-            ESP_LOGI(TAG, "PPA EIS crop buffer: %p (%lu bytes)",
-                     ppa_scaled_buf, (unsigned long)ppa_scaled_buf_size);
+            ppa_scaled_buf_size = recorder->enc_width * recorder->enc_height * 3 / 2;
+            // Align to L2 cache line (128 bytes) — PPA DMA requires both addr and size aligned
+            ppa_scaled_buf_size = (ppa_scaled_buf_size + 127) & ~127;
+            ppa_scaled_buf = heap_caps_aligned_calloc(128, 1, ppa_scaled_buf_size,
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!ppa_scaled_buf) {
+                ESP_LOGE(TAG, "PPA output buffer alloc failed (%lu bytes) — encoding at sensor native",
+                         (unsigned long)ppa_scaled_buf_size);
+                ppa_unregister_client(ppa_srm_handle);
+                ppa_srm_handle = NULL;
+                recorder->enc_width = recorder->width;
+                recorder->enc_height = recorder->height;
+            } else {
+                ESP_LOGI(TAG, "PPA EIS crop buffer: %p (%lu bytes)",
+                         ppa_scaled_buf, (unsigned long)ppa_scaled_buf_size);
+            }
         }
     }
 
