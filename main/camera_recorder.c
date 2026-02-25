@@ -469,8 +469,8 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     {0x341E, 0x00}, {0x341F, 0x50},  // QBC width = 1280/16 = 80 = 0x50
     {0x3420, 0x00}, {0x3421, 0x3C},  // QBC height = 720/12 = 60 = 0x3C
     {0x3366, 0x00}, {0x3367, 0x00}, {0x3368, 0x00}, {0x3369, 0x00},
-    // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
-    {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
+    // --- Orientation (IMX708_REG_ORIENTATION = 0x0101) ---
+    {0x0101, 0x00},  // No rotation
     {0xFFFF, 0x00}
 };
 
@@ -480,7 +480,7 @@ static const esp_cam_sensor_isp_info_t custom_isp_info = {
         .pclk = 182400000,
         .vts = 1558,
         .hts = 12740,
-        .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,
+        .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
     }
 };
 
@@ -560,8 +560,8 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     {0x341E, 0x00}, {0x341F, 0x78},  // QBC width = 1920/16 = 120 = 0x78
     {0x3420, 0x00}, {0x3421, 0x5A},  // QBC height = 1080/12 = 90 = 0x5A
     {0x3366, 0x00}, {0x3367, 0x00}, {0x3368, 0x00}, {0x3369, 0x00},
-    // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
-    {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
+    // --- Orientation (IMX708_REG_ORIENTATION = 0x0101) ---
+    {0x0101, 0x00},  // No rotation
     {0xFFFF, 0x00}
 };
 
@@ -571,7 +571,7 @@ static const esp_cam_sensor_isp_info_t custom_isp_info = {
         .pclk = 182400000,
         .vts = 5952,
         .hts = 12740,
-        .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,  // RGGB → BGGR with 180° rotation
+        .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
     }
 };
 
