@@ -6,13 +6,49 @@ Records H.264 video with PDM microphone audio to AVI files on SD card.
 
 > **⚠️ DISCLAIMER:** 100% of this project was built with AI (Claude Opus 4.6). No human has reviewed the code. Use at your own risk — but it worked for me.
 
+## Current Performance
+
+| Metric | Value |
+|--------|-------|
+| **Sensor** | 1920×1080 @ 15fps (IMX708 digital crop, 83% FOV) |
+| **Encode** | 1280×720 H.264 (PPA 1:1 crop from 1080p for EIS margin) |
+| **Recording FPS** | **7.8 FPS** (stable, 0 drops) |
+| **Bitrate** | 8 Mbps, GOP=15, QP 22–40 |
+| **Audio** | PDM mic, 16-bit 16kHz mono |
+| **Heap** | ~15.5 MB free (stable, no leaks) |
+| **File format** | AVI, 100MB segments, crash-safe headers |
+
+### Pipeline Timing (per frame)
+
+| Stage | Time | Thread | Notes |
+|-------|------|--------|-------|
+| CSI capture (dqbuf) | 66.7ms | Capture | Waiting for sensor frame (1000/15 = 66.7ms) |
+| PPA crop | 45.8ms | Capture | Hardware DMA: 1920×1080 → 1280×720 YUV420 |
+| H.264 encode | 14.7ms | Capture | Hardware encoder, zero-copy pipeline |
+| **Capture total** | **127.2ms** | | **← Bottleneck (= 7.86 FPS ceiling)** |
+| SD write (video) | 16.7ms | Write | Internal DMA staging, 4-line SDMMC |
+| SD write (audio) | 10.9ms | Write | Interleaved PCM chunks |
+| **Write total** | **~28ms** | | Idle ~100ms/frame waiting for encoder |
+
+### Bottleneck Analysis
+
+The **capture/encode pipeline** (127.2ms) is the hard ceiling — the SD write thread finishes in ~28ms and waits ~100ms for each frame. The bottleneck breaks down as:
+
+1. **Sensor rate (66.7ms)** — IMX708 delivers at 15fps. Not reducible at 1080p.
+2. **PPA crop (45.8ms)** — Hardware DMA speed, no tunable registers. Can only be eliminated by encoding at sensor resolution (OOMs at 1080p — H.264 ref frame needs ~6.2MB).
+3. **H.264 encode (14.7ms)** — Already at max 160MHz clock. Efficient.
+
+**To reach higher FPS**, the only practical path is **720p native sensor mode** (skip PPA entirely) → ~24 FPS theoretical, but with narrower 56% FOV and no EIS margin.
+
 ## Features
 
-- **1920×1080 @ 30fps** MIPI CSI-2 capture via IMX708
-- **H.264 hardware encoding** using ESP32-P4's built-in encoder
-- **PDM microphone** audio recording (16-bit, 16kHz)
-- **AVI container** output to SD card (~5 FPS write throughput)
+- **1920×1080** MIPI CSI-2 capture via IMX708 (D-PHY timing, digital crop)
+- **H.264 hardware encoding** with configurable resolution (1280×720 default)
+- **PDM microphone** audio recording (16-bit, 16kHz mono)
+- **AVI container** with crash-safe periodic header updates
 - **Auto-focus** via DW9807 VCM
+- **EIS crop margins** — PPA crops 720p from 1080p (stabilization-ready overscan)
+- **Zero-copy pipeline** — DMA from CSI → PPA → H.264 → SD with PSRAM staging
 
 ---
 
