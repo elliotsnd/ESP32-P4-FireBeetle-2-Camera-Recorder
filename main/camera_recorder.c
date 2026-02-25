@@ -57,6 +57,10 @@
 #include "soc/dw_gdma_struct.h"
 #include "soc/hp_sys_clkrst_struct.h"
 
+/* SDMMC DMA tuning registers */
+#include "soc/sdmmc_reg.h"
+#include "soc/hp_system_reg.h"
+
 static const char *TAG = "CAM_REC";
 
 /* ISR diagnostic counters defined in esp_video_csi_device.c */
@@ -232,7 +236,7 @@ static void dump_csi_diagnostics(void)
 #define DIAG_USE_720P       0   // 1 = override resolution to 720p (less memory, less MIPI bandwidth)
 #define DIAG_LOW_BITRATE    0   // 1 = drop H.264 bitrate to 6 Mbps
 #define DIAG_NO_AUDIO       0   // 1 = skip PDM mic init and audio capture entirely
-#define DIAG_USE_1080P15    1   // 1 = 1664×928@30fps (72% FOV)  0 = 1536×864@30fps (67% FOV)
+#define DIAG_USE_1080P15    1   // 1 = 1280×720@30fps (56% FOV, high quality)  0 = 1536×864@30fps (67% FOV)
 
 // ============================================================================
 // CONFIGURATION
@@ -241,21 +245,23 @@ static void dump_csi_diagnostics(void)
 #if DIAG_LOW_BITRATE
 #define H264_BITRATE        4000000   // 4 Mbps (reduced for diagnostics)
 #else
-#define H264_BITRATE        8000000   // 8 Mbps target bitrate
-#endif
-#define H264_GOP            12        // I-frame every 12 frames (~1s) — limits pink artifact duration from corrupted refs
-#define H264_MIN_QP         20        // Min QP (lower = better quality)
-#define H264_MAX_QP         40        // Max QP (higher = smaller worst-case frames)
+#define H264_BITRATE        8000000   // 8 Mbps — NOTE: esp_video bug sets encoder fps=GOP, so
+#endif                                //   bits_per_frame = bitrate/GOP = 8M/30 = 33KB target
+#define H264_GOP            15        // GOP=15. Halved from 30 to limit P-frame corruption duration.
+                                      //   esp_video H264 driver uses GOP as encoder FPS for RC budget.
+                                      //   I-frame every 0.5s means artifacts heal in ≤0.5s.
+#define H264_MIN_QP         22        // Min QP — floor quality (lower=better, encoder starts at (min+max)/2=31)
+#define H264_MAX_QP         40        // Max QP — wide range lets RC converge without uint32_t overflow
 #define RECORD_DURATION_SEC 300       // 5 minutes
 #define AVI_FPS             30        // Max encode rate (actual FPS patched into AVI header at finalization)
 
-#define NUM_CAP_BUFFERS     4       // Reduced from 6: 2304x1296 buffers are 4.5MB each
+#define NUM_CAP_BUFFERS     6       // DMA pipeline needs 3+ (writing/ISP/encode), 6 gives headroom
 #define NUM_M2M_CAP_BUFS    1       // V4L2 M2M capture buffer (single; driver limitation)
-#define NUM_JPEG_BUFS       30      // Rotating PSRAM staging buffers - absorb SD card write latency spikes
+#define NUM_JPEG_BUFS       60      // Rotating PSRAM staging buffers - 2s buffer at 30fps absorbs SD stalls
 #if DIAG_USE_1080P15
-#define JPEG_BUF_SIZE       (192 * 1024)  // 192KB per buffer (H.264 I-frames ~100-150KB at 1920×1080)
+#define JPEG_BUF_SIZE       (64 * 1024)   // 64KB per buffer (H.264 avg ~33KB, I-frames ~50-60KB)
 #else
-#define JPEG_BUF_SIZE       (96 * 1024)   // 96KB per buffer (H.264 frames ~40-70KB at 1536×864)
+#define JPEG_BUF_SIZE       (64 * 1024)   // 64KB per buffer (H.264 frames ~33KB avg)
 #endif
 #define SKIP_STARTUP_FRAMES 30      // Skip startup frames for AEC/AGC settling (~1s at 30fps)
 
@@ -376,9 +382,8 @@ static uint32_t ppa_scaled_buf_size = 0;
 //
 // Two modes available via DIAG_USE_1080P15 toggle:
 //   0 (default): 1536×864 @ 30fps — 67% sensor FOV, 1.9 MB/frame, proven stable
-//   1:           1920×1080 @ 30fps — 83% sensor FOV, ~3.1 MB/frame, scale-only mode
-//                Previous 1648 limit was due to crop mode (0x43) stalling;
-//                scale-only (0x41) handles full 1920 width fine.
+//   1:           1280×720 @ 30fps — 56% sensor FOV, ~1.4 MB/frame, high quality motion
+//                Lower pixel count = more bits per pixel at same bitrate = no block artifacts.
 // ============================================================================
 // DIAG_USE_1080P15 defined above (before JPEG_BUF_SIZE which depends on it)
 
@@ -388,16 +393,15 @@ typedef struct { uint16_t reg; uint8_t val; } custom_reginfo_t;
 // Only FRM_LENGTH, digital crop, output size, and orientation differ between modes.
 
 #if DIAG_USE_1080P15
-// 1920×1080 @ 30fps: 83% sensor FOV, ~3.1 MB/frame
-// Scale-only mode (0x41) — matches built-in imx708_1920x1080_regs.
-// afull_thrd patched from 960→2040 at runtime to prevent mid-line backpressure.
-// Digital crop: center 1920×1080 in 2304×1296 binned (offset 192,108)
+// 1280×720 @ 30fps: 56% sensor FOV, ~1.4 MB/frame
+// Scale-only mode (0x41) — proven stable on ESP32-P4 CSI bridge.
+// Digital crop: center 1280×720 in 2304×1296 binned (offset 512,288)
 static const custom_reginfo_t custom_imx708_regs[] = {
     // --- Timing ---
     {0x0342, 0x31},  // LINE_LENGTH_PCK (12740)
     {0x0343, 0xC4},
-    {0x0340, 0x0D},  // FRM_LENGTH_LINES (3500 = 0x0DAC) — 30fps
-    {0x0341, 0xAC},
+    {0x0340, 0x06},  // FRM_LENGTH_LINES (1558 = 0x0616) — 30fps
+    {0x0341, 0x16},  //   was 3500 → only 13fps! Min VTS=1336 (height+40)
     // --- Analog readout: full sensor ---
     {0x0344, 0x00}, {0x0345, 0x00},  // X_ADDR_START (0)
     {0x0346, 0x00}, {0x0347, 0x00},  // Y_ADDR_START (0)
@@ -405,28 +409,28 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     {0x034A, 0x0A}, {0x034B, 0x1F},  // Y_ADDR_END (2591)
     // --- Exposure/misc ---
     {0x0220, 0x62}, {0x0222, 0x01},
-    // --- Binning: 2×2, averaged weighting (matches built-in 1920×1080) ---
+    // --- Binning: 2×2, averaged weighting ---
     {0x0900, 0x01}, {0x0901, 0x22}, {0x0902, 0x08},
-    // --- Scaling: scale-only mode (matches built-in 1920×1080; crop mode 0x43 stalls) ---
+    // --- Scaling: scale-only mode (crop mode 0x43 stalls on ESP32-P4) ---
     {0x3200, 0x41}, {0x3201, 0x41}, {0x32D5, 0x00}, {0x32D6, 0x00},
     {0x32DB, 0x01}, {0x32DF, 0x00}, {0x350C, 0x00}, {0x350D, 0x00},
-    // --- Digital crop: 1920×1080 centered in 2304×1296 ---
-    {0x0408, 0x00},  // DIG_CROP_X_OFFSET = (2304-1920)/2 = 192 = 0x00C0
-    {0x0409, 0xC0},
-    {0x040A, 0x00},  // DIG_CROP_Y_OFFSET = (1296-1080)/2 = 108 = 0x006C
-    {0x040B, 0x6C},
-    {0x040C, 0x07},  // DIG_CROP_IMAGE_WIDTH = 1920 = 0x0780
-    {0x040D, 0x80},
-    {0x040E, 0x04},  // DIG_CROP_IMAGE_HEIGHT = 1080 = 0x0438
-    {0x040F, 0x38},
-    // --- Output size = 1920×1080 ---
-    {0x034C, 0x07}, {0x034D, 0x80},  // X_OUTPUT_SIZE = 1920
-    {0x034E, 0x04}, {0x034F, 0x38},  // Y_OUTPUT_SIZE = 1080
+    // --- Digital crop: 1280×720 centered in 2304×1296 ---
+    {0x0408, 0x02},  // DIG_CROP_X_OFFSET = (2304-1280)/2 = 512 = 0x0200
+    {0x0409, 0x00},
+    {0x040A, 0x01},  // DIG_CROP_Y_OFFSET = (1296-720)/2 = 288 = 0x0120
+    {0x040B, 0x20},
+    {0x040C, 0x05},  // DIG_CROP_IMAGE_WIDTH = 1280 = 0x0500
+    {0x040D, 0x00},
+    {0x040E, 0x02},  // DIG_CROP_IMAGE_HEIGHT = 720 = 0x02D0
+    {0x040F, 0xD0},
+    // --- Output size = 1280×720 ---
+    {0x034C, 0x05}, {0x034D, 0x00},  // X_OUTPUT_SIZE = 1280
+    {0x034E, 0x02}, {0x034F, 0xD0},  // Y_OUTPUT_SIZE = 720
     // --- PLL: identical to 720p ---
     {0x0301, 0x05}, {0x0303, 0x02}, {0x0305, 0x02},
     {0x0306, 0x00}, {0x0307, 0x7C}, {0x030B, 0x02},
     {0x030D, 0x04}, {0x0310, 0x01},
-    // --- MIPI DPHY timing (from built-in 1920×1080 / RPi mode_2x2binned_regs) ---
+    // --- MIPI DPHY timing (from built-in 720p / RPi mode_2x2binned_regs) ---
     {0x3CA0, 0x00}, {0x3CA1, 0x3C}, {0x3CA4, 0x00}, {0x3CA5, 0x3C},
     {0x3CA6, 0x00}, {0x3CA7, 0x00}, {0x3CAA, 0x00}, {0x3CAB, 0x00},
     {0x3CB8, 0x00}, {0x3CB9, 0x1C}, {0x3CBA, 0x00}, {0x3CBB, 0x08},
@@ -435,17 +439,17 @@ static const custom_reginfo_t custom_imx708_regs[] = {
     {0x0202, 0x05}, {0x0203, 0xAC},
     {0x0204, 0x00}, {0x0205, 0x00},
     {0x020E, 0x01}, {0x020F, 0x00},
-    // --- HDR integration/gain defaults (from built-in 1920×1080) ---
+    // --- HDR integration/gain defaults ---
     {0x0224, 0x01}, {0x0225, 0xF4},  // SHORT_INTEGRATION_TIME
     {0x3116, 0x01}, {0x3117, 0xF4},  // MID_INTEGRATION_TIME
     {0x0216, 0x00}, {0x0217, 0x00},  // SHORT_ANALOG_GAIN
     {0x0218, 0x01}, {0x0219, 0x00},
     {0x3118, 0x00}, {0x3119, 0x00},  // MID_ANALOG_GAIN
     {0x311A, 0x01}, {0x311B, 0x00},
-    // --- QBC / blanking (from built-in 1920×1080) ---
+    // --- QBC / blanking ---
     {0x341A, 0x00}, {0x341B, 0x00}, {0x341C, 0x00}, {0x341D, 0x00},
-    {0x341E, 0x00}, {0x341F, 0x78},  // QBC width = 1920/16 = 120 = 0x78
-    {0x3420, 0x00}, {0x3421, 0x5A},  // QBC height = 1080/12 = 90 = 0x5A
+    {0x341E, 0x00}, {0x341F, 0x50},  // QBC width = 1280/16 = 80 = 0x50
+    {0x3420, 0x00}, {0x3421, 0x3C},  // QBC height = 720/12 = 60 = 0x3C
     {0x3366, 0x00}, {0x3367, 0x00}, {0x3368, 0x00}, {0x3369, 0x00},
     // --- 180° rotation (IMX708_REG_ORIENTATION = 0x0101) ---
     {0x0101, 0x03},  // bit0=H_MIRROR, bit1=V_FLIP → 0x03 = 180°
@@ -456,19 +460,19 @@ static const esp_cam_sensor_isp_info_t custom_isp_info = {
     .isp_v1_info = {
         .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
         .pclk = 182400000,
-        .vts = 3500,
+        .vts = 1558,
         .hts = 12740,
         .bayer_type = ESP_CAM_SENSOR_BAYER_BGGR,
     }
 };
 
 static const esp_cam_sensor_format_t custom_wide_format = {
-    .name = "MIPI_2lane_24Minput_RAW10_1920x1080",
+    .name = "MIPI_2lane_24Minput_RAW10_1280x720",
     .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
     .port = ESP_CAM_SENSOR_MIPI_CSI,
     .xclk = 24000000,
-    .width = 1920,
-    .height = 1080,
+    .width = 1280,
+    .height = 720,
     .regs = custom_imx708_regs,
     .regs_size = ARRAY_SIZE(custom_imx708_regs),
     .fps = 30,
@@ -954,7 +958,7 @@ static esp_err_t init_video_pipeline(void)
     // Allocate rotating PSRAM staging buffers for async write pipeline
     recorder->jpeg_buf_write_idx = 0;
     for (int i = 0; i < NUM_JPEG_BUFS; i++) {
-        recorder->jpeg_out_buf[i] = heap_caps_aligned_alloc(64, JPEG_BUF_SIZE,
+        recorder->jpeg_out_buf[i] = heap_caps_aligned_alloc(128, JPEG_BUF_SIZE,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!recorder->jpeg_out_buf[i]) {
             ESP_LOGE(TAG, "Staging buffer %d alloc failed", i);
@@ -1160,8 +1164,15 @@ static uint32_t audio_drain(uint8_t *dst, uint32_t max_bytes)
         rd = wr - AUDIO_RING_SIZE;
     }
     if (avail > max_bytes) avail = max_bytes;
-    for (uint32_t i = 0; i < avail; i++) {
-        dst[i] = audio_ring[(rd + i) % AUDIO_RING_SIZE];
+    if (avail == 0) return 0;
+    // Use memcpy instead of byte-by-byte (PSRAM is slow per-byte)
+    uint32_t start = rd % AUDIO_RING_SIZE;
+    uint32_t first = AUDIO_RING_SIZE - start;
+    if (first >= avail) {
+        memcpy(dst, audio_ring + start, avail);
+    } else {
+        memcpy(dst, audio_ring + start, first);
+        memcpy(dst + first, audio_ring, avail - first);
     }
     audio_ring_rd = rd + avail;
     return avail;
@@ -1192,7 +1203,7 @@ static esp_err_t init_sd_card(void)
         .allocation_unit_size = 64 * 1024,
     };
 
-    // Try 4-bit 40MHz first (best throughput), fall back to slower modes
+    // Try 4-bit 40MHz first (best proven throughput), fall back to slower modes
     struct { int w; int f; const char *n; } modes[] = {
         {4, SDMMC_FREQ_HIGHSPEED, "4-bit 40MHz"},
         {4, SDMMC_FREQ_DEFAULT,   "4-bit 20MHz"},
@@ -1240,27 +1251,27 @@ static esp_err_t init_sd_card(void)
 // ============================================================================
 
 // Write a 32-bit little-endian value
-static void avi_write_u32(FILE *f, uint32_t val)
+static void avi_write_u32(int fd, uint32_t val)
 {
     uint8_t b[4] = { val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF, (val >> 24) & 0xFF };
-    fwrite(b, 1, 4, f);
+    write(fd, b, 4);
 }
 
 // Write a FourCC string
-static void avi_write_4cc(FILE *f, const char *cc)
+static void avi_write_4cc(int fd, const char *cc)
 {
-    fwrite(cc, 1, 4, f);
+    write(fd, cc, 4);
 }
 
 // Write 16-bit little-endian value
-static void avi_write_u16(FILE *f, uint16_t val)
+static void avi_write_u16(int fd, uint16_t val)
 {
     uint8_t b[2] = { val & 0xFF, (val >> 8) & 0xFF };
-    fwrite(b, 1, 2, f);
+    write(fd, b, 2);
 }
 
 // Write AVI headers with 2 streams (video + audio), returns offset to 'movi' data start
-static uint32_t avi_write_header(FILE *f, uint32_t width, uint32_t height, uint32_t fps)
+static uint32_t avi_write_header(int fd, uint32_t width, uint32_t height, uint32_t fps)
 {
     uint32_t us_per_frame = 1000000 / fps;
     uint32_t frame_size = width * height; // estimated max
@@ -1269,195 +1280,249 @@ static uint32_t avi_write_header(FILE *f, uint32_t width, uint32_t height, uint3
     uint32_t audio_block_align = AUDIO_CHANNELS * (AUDIO_BITS / 8);
 
     // RIFF header (file size placeholder = 0, updated at end)
-    avi_write_4cc(f, "RIFF");
-    avi_write_u32(f, 0);        // placeholder: file size - 8
-    avi_write_4cc(f, "AVI ");
+    avi_write_4cc(fd, "RIFF");
+    avi_write_u32(fd, 0);        // placeholder: file size - 8
+    avi_write_4cc(fd, "AVI ");
 
     // LIST 'hdrl'
-    avi_write_4cc(f, "LIST");
-    uint32_t hdrl_size_pos = ftell(f);
-    avi_write_u32(f, 0);        // placeholder: hdrl size
-    uint32_t hdrl_start = ftell(f);
-    avi_write_4cc(f, "hdrl");
+    avi_write_4cc(fd, "LIST");
+    uint32_t hdrl_size_pos = lseek(fd, 0, SEEK_CUR);
+    avi_write_u32(fd, 0);        // placeholder: hdrl size
+    uint32_t hdrl_start = lseek(fd, 0, SEEK_CUR);
+    avi_write_4cc(fd, "hdrl");
 
     // 'avih' - Main AVI Header (56 bytes)
-    avi_write_4cc(f, "avih");
-    avi_write_u32(f, 56);
-    avi_write_u32(f, us_per_frame);  // dwMicroSecPerFrame
-    avi_write_u32(f, frame_size);    // dwMaxBytesPerSec (estimate)
-    avi_write_u32(f, 0);             // dwPaddingGranularity
-    avi_write_u32(f, 0);             // dwFlags: 0 initially (AVIF_HASINDEX set at finalization)
-    avi_write_u32(f, 0);             // dwTotalFrames (placeholder, updated at end)
-    avi_write_u32(f, 0);             // dwInitialFrames
-    avi_write_u32(f, 2);             // dwStreams (video + audio)
-    avi_write_u32(f, frame_size);    // dwSuggestedBufferSize
-    avi_write_u32(f, width);         // dwWidth
-    avi_write_u32(f, height);        // dwHeight
-    avi_write_u32(f, 0);             // dwReserved[0]
-    avi_write_u32(f, 0);             // dwReserved[1]
-    avi_write_u32(f, 0);             // dwReserved[2]
-    avi_write_u32(f, 0);             // dwReserved[3]
+    avi_write_4cc(fd, "avih");
+    avi_write_u32(fd, 56);
+    avi_write_u32(fd, us_per_frame);  // dwMicroSecPerFrame
+    avi_write_u32(fd, frame_size);    // dwMaxBytesPerSec (estimate)
+    avi_write_u32(fd, 0);             // dwPaddingGranularity
+    avi_write_u32(fd, 0);             // dwFlags: 0 initially (AVIF_HASINDEX set at finalization)
+    avi_write_u32(fd, 0);             // dwTotalFrames (placeholder, updated at end)
+    avi_write_u32(fd, 0);             // dwInitialFrames
+    avi_write_u32(fd, 2);             // dwStreams (video + audio)
+    avi_write_u32(fd, frame_size);    // dwSuggestedBufferSize
+    avi_write_u32(fd, width);         // dwWidth
+    avi_write_u32(fd, height);        // dwHeight
+    avi_write_u32(fd, 0);             // dwReserved[0]
+    avi_write_u32(fd, 0);             // dwReserved[1]
+    avi_write_u32(fd, 0);             // dwReserved[2]
+    avi_write_u32(fd, 0);             // dwReserved[3]
 
     // ---- Stream 0: Video (H.264) ----
-    avi_write_4cc(f, "LIST");
-    uint32_t strl0_size_pos = ftell(f);
-    avi_write_u32(f, 0);
-    uint32_t strl0_start = ftell(f);
-    avi_write_4cc(f, "strl");
+    avi_write_4cc(fd, "LIST");
+    uint32_t strl0_size_pos = lseek(fd, 0, SEEK_CUR);
+    avi_write_u32(fd, 0);
+    uint32_t strl0_start = lseek(fd, 0, SEEK_CUR);
+    avi_write_4cc(fd, "strl");
 
     // 'strh' - Video Stream Header (56 bytes)
-    avi_write_4cc(f, "strh");
-    avi_write_u32(f, 56);
-    avi_write_4cc(f, "vids");        // fccType
-    avi_write_4cc(f, "H264");        // fccHandler
-    avi_write_u32(f, 0);             // dwFlags
-    avi_write_u32(f, 0);             // wPriority + wLanguage
-    avi_write_u32(f, 0);             // dwInitialFrames
-    avi_write_u32(f, 1);             // dwScale
-    avi_write_u32(f, fps);           // dwRate
-    avi_write_u32(f, 0);             // dwStart
-    avi_write_u32(f, 0);             // dwLength (placeholder, updated at end)
-    avi_write_u32(f, frame_size);    // dwSuggestedBufferSize
-    avi_write_u32(f, 0);             // dwQuality
-    avi_write_u32(f, 0);             // dwSampleSize
-    avi_write_u32(f, 0);             // rcFrame (left, top)
-    avi_write_u32(f, (height << 16) | width); // rcFrame (right, bottom)
+    avi_write_4cc(fd, "strh");
+    avi_write_u32(fd, 56);
+    avi_write_4cc(fd, "vids");        // fccType
+    avi_write_4cc(fd, "H264");        // fccHandler
+    avi_write_u32(fd, 0);             // dwFlags
+    avi_write_u32(fd, 0);             // wPriority + wLanguage
+    avi_write_u32(fd, 0);             // dwInitialFrames
+    avi_write_u32(fd, 1);             // dwScale
+    avi_write_u32(fd, fps);           // dwRate
+    avi_write_u32(fd, 0);             // dwStart
+    avi_write_u32(fd, 0);             // dwLength (placeholder, updated at end)
+    avi_write_u32(fd, frame_size);    // dwSuggestedBufferSize
+    avi_write_u32(fd, 0);             // dwQuality
+    avi_write_u32(fd, 0);             // dwSampleSize
+    avi_write_u32(fd, 0);             // rcFrame (left, top)
+    avi_write_u32(fd, (height << 16) | width); // rcFrame (right, bottom)
 
     // 'strf' - Video Stream Format (BITMAPINFOHEADER, 40 bytes)
-    avi_write_4cc(f, "strf");
-    avi_write_u32(f, 40);
-    avi_write_u32(f, 40);            // biSize
-    avi_write_u32(f, width);         // biWidth
-    avi_write_u32(f, height);        // biHeight
-    avi_write_u32(f, (24 << 16) | 1); // biPlanes(1) + biBitCount(24)
-    avi_write_4cc(f, "H264");        // biCompression
-    avi_write_u32(f, frame_size);    // biSizeImage
-    avi_write_u32(f, 0);             // biXPelsPerMeter
-    avi_write_u32(f, 0);             // biYPelsPerMeter
-    avi_write_u32(f, 0);             // biClrUsed
-    avi_write_u32(f, 0);             // biClrImportant
+    avi_write_4cc(fd, "strf");
+    avi_write_u32(fd, 40);
+    avi_write_u32(fd, 40);            // biSize
+    avi_write_u32(fd, width);         // biWidth
+    avi_write_u32(fd, height);        // biHeight
+    avi_write_u32(fd, (24 << 16) | 1); // biPlanes(1) + biBitCount(24)
+    avi_write_4cc(fd, "H264");        // biCompression
+    avi_write_u32(fd, frame_size);    // biSizeImage
+    avi_write_u32(fd, 0);             // biXPelsPerMeter
+    avi_write_u32(fd, 0);             // biYPelsPerMeter
+    avi_write_u32(fd, 0);             // biClrUsed
+    avi_write_u32(fd, 0);             // biClrImportant
 
     // Patch strl0 size
-    uint32_t strl0_end = ftell(f);
-    fseek(f, strl0_size_pos, SEEK_SET);
-    avi_write_u32(f, strl0_end - strl0_start);
-    fseek(f, strl0_end, SEEK_SET);
+    uint32_t strl0_end = lseek(fd, 0, SEEK_CUR);
+    lseek(fd, strl0_size_pos, SEEK_SET);
+    avi_write_u32(fd, strl0_end - strl0_start);
+    lseek(fd, strl0_end, SEEK_SET);
 
     // ---- Stream 1: Audio (PCM) ----
-    avi_write_4cc(f, "LIST");
-    uint32_t strl1_size_pos = ftell(f);
-    avi_write_u32(f, 0);
-    uint32_t strl1_start = ftell(f);
-    avi_write_4cc(f, "strl");
+    avi_write_4cc(fd, "LIST");
+    uint32_t strl1_size_pos = lseek(fd, 0, SEEK_CUR);
+    avi_write_u32(fd, 0);
+    uint32_t strl1_start = lseek(fd, 0, SEEK_CUR);
+    avi_write_4cc(fd, "strl");
 
     // 'strh' - Audio Stream Header (56 bytes)
-    avi_write_4cc(f, "strh");
-    avi_write_u32(f, 56);
-    avi_write_4cc(f, "auds");        // fccType
-    avi_write_u32(f, 0);             // fccHandler (0 for PCM audio)
-    avi_write_u32(f, 0);             // dwFlags
-    avi_write_u32(f, 0);             // wPriority + wLanguage
-    avi_write_u32(f, 0);             // dwInitialFrames
-    avi_write_u32(f, audio_block_align);  // dwScale = block align
-    avi_write_u32(f, audio_bytes_per_sec); // dwRate = bytes/sec
-    avi_write_u32(f, 0);             // dwStart
-    avi_write_u32(f, 0);             // dwLength (placeholder: total audio samples)
-    avi_write_u32(f, audio_bytes_per_sec); // dwSuggestedBufferSize (1 sec)
-    avi_write_u32(f, 0);             // dwQuality
-    avi_write_u32(f, audio_block_align);  // dwSampleSize
-    avi_write_u32(f, 0);             // rcFrame (unused for audio)
-    avi_write_u32(f, 0);             // rcFrame
+    avi_write_4cc(fd, "strh");
+    avi_write_u32(fd, 56);
+    avi_write_4cc(fd, "auds");        // fccType
+    avi_write_u32(fd, 0);             // fccHandler (0 for PCM audio)
+    avi_write_u32(fd, 0);             // dwFlags
+    avi_write_u32(fd, 0);             // wPriority + wLanguage
+    avi_write_u32(fd, 0);             // dwInitialFrames
+    avi_write_u32(fd, audio_block_align);  // dwScale = block align
+    avi_write_u32(fd, audio_bytes_per_sec); // dwRate = bytes/sec
+    avi_write_u32(fd, 0);             // dwStart
+    avi_write_u32(fd, 0);             // dwLength (placeholder: total audio samples)
+    avi_write_u32(fd, audio_bytes_per_sec); // dwSuggestedBufferSize (1 sec)
+    avi_write_u32(fd, 0);             // dwQuality
+    avi_write_u32(fd, audio_block_align);  // dwSampleSize
+    avi_write_u32(fd, 0);             // rcFrame (unused for audio)
+    avi_write_u32(fd, 0);             // rcFrame
 
     // 'strf' - Audio Stream Format (PCMWAVEFORMAT, 16 bytes — no cbSize for PCM)
-    avi_write_4cc(f, "strf");
-    avi_write_u32(f, 16);            // chunk size
-    avi_write_u16(f, 1);             // wFormatTag: WAVE_FORMAT_PCM
-    avi_write_u16(f, AUDIO_CHANNELS); // nChannels
-    avi_write_u32(f, audio_rate);    // nSamplesPerSec
-    avi_write_u32(f, audio_bytes_per_sec); // nAvgBytesPerSec
-    avi_write_u16(f, audio_block_align);   // nBlockAlign
-    avi_write_u16(f, AUDIO_BITS);    // wBitsPerSample
+    avi_write_4cc(fd, "strf");
+    avi_write_u32(fd, 16);            // chunk size
+    avi_write_u16(fd, 1);             // wFormatTag: WAVE_FORMAT_PCM
+    avi_write_u16(fd, AUDIO_CHANNELS); // nChannels
+    avi_write_u32(fd, audio_rate);    // nSamplesPerSec
+    avi_write_u32(fd, audio_bytes_per_sec); // nAvgBytesPerSec
+    avi_write_u16(fd, audio_block_align);   // nBlockAlign
+    avi_write_u16(fd, AUDIO_BITS);    // wBitsPerSample
 
     // Patch strl1 size
-    uint32_t strl1_end = ftell(f);
-    fseek(f, strl1_size_pos, SEEK_SET);
-    avi_write_u32(f, strl1_end - strl1_start);
-    fseek(f, strl1_end, SEEK_SET);
+    uint32_t strl1_end = lseek(fd, 0, SEEK_CUR);
+    lseek(fd, strl1_size_pos, SEEK_SET);
+    avi_write_u32(fd, strl1_end - strl1_start);
+    lseek(fd, strl1_end, SEEK_SET);
 
     // Patch hdrl size
-    uint32_t hdrl_end = ftell(f);
-    fseek(f, hdrl_size_pos, SEEK_SET);
-    avi_write_u32(f, hdrl_end - hdrl_start);
-    fseek(f, hdrl_end, SEEK_SET);
+    uint32_t hdrl_end = lseek(fd, 0, SEEK_CUR);
+    lseek(fd, hdrl_size_pos, SEEK_SET);
+    avi_write_u32(fd, hdrl_end - hdrl_start);
+    lseek(fd, hdrl_end, SEEK_SET);
 
     // LIST 'movi'
-    avi_write_4cc(f, "LIST");
-    avi_write_u32(f, 0);        // placeholder: movi size (updated at end)
-    uint32_t movi_fourcc_pos = ftell(f);
-    avi_write_4cc(f, "movi");
+    avi_write_4cc(fd, "LIST");
+    avi_write_u32(fd, 0);        // placeholder: movi size (updated at end)
+    uint32_t movi_fourcc_pos = lseek(fd, 0, SEEK_CUR);
+    avi_write_4cc(fd, "movi");
 
     // Return position of 'movi' fourcc — idx1 offsets are relative to this.
     // First data chunk starts at movi_fourcc_pos + 4.
     return movi_fourcc_pos;
 }
 
-// Write one JPEG frame as AVI chunk via internal DMA staging.
-// newlib fwrite() bypasses setvbuf when data exceeds remaining buffer space,
-// writing directly from the source pointer (PSRAM) to VFS/SDMMC DMA → 16x slower.
-// By chunking through an internal DMA buffer, ALL writes use fast internal memory.
-static uint32_t avi_write_frame(FILE *f, const uint8_t *jpeg_data, uint32_t jpeg_size,
+// Timing accumulators for avi_write_frame breakdown
+static int64_t awf_memcpy_total_us = 0;
+static int64_t awf_write_total_us = 0;
+static int awf_count = 0;
+
+// Write one H.264 frame as AVI chunk via internal DMA staging.
+// Merges the 8-byte AVI header (fourcc + size) INTO the first staging chunk
+// so the entire frame is written as sector-aligned write() calls from internal RAM.
+static uint32_t avi_write_frame(int fd, const uint8_t *jpeg_data, uint32_t jpeg_size,
                                 uint8_t *stg, size_t stg_size)
 {
-    // AVI chunk header (8 bytes) written via tiny fwrite → goes through setvbuf
-    avi_write_4cc(f, "00dc");
-    avi_write_u32(f, jpeg_size);
+    if (stg && stg_size > 8) {
+        // Pack AVI chunk header into staging buffer first 8 bytes
+        stg[0] = '0'; stg[1] = '0'; stg[2] = 'd'; stg[3] = 'c';
+        stg[4] = jpeg_size & 0xFF;
+        stg[5] = (jpeg_size >> 8) & 0xFF;
+        stg[6] = (jpeg_size >> 16) & 0xFF;
+        stg[7] = (jpeg_size >> 24) & 0xFF;
 
-    // Stage JPEG data through internal DMA buffer in chunks.
-    // Falls back to direct fwrite if no staging buffer available.
-    if (stg && stg_size > 0) {
-        size_t off = 0;
+        // Fill rest of first chunk with frame data
+        size_t first_data = stg_size - 8;
+        if (first_data > jpeg_size) first_data = jpeg_size;
+        int64_t t_mc = esp_timer_get_time();
+        memcpy(stg + 8, jpeg_data, first_data);
+        awf_memcpy_total_us += esp_timer_get_time() - t_mc;
+        size_t first_total = 8 + first_data;
+        // Pad to even if this is the only chunk
+        if (first_data == jpeg_size && (jpeg_size & 1)) {
+            stg[first_total] = 0;
+            first_total++;
+        }
+        int64_t t_fw = esp_timer_get_time();
+        write(fd, stg, first_total);
+        awf_write_total_us += esp_timer_get_time() - t_fw;
+
+        // Remaining data in full chunks
+        size_t off = first_data;
         while (off < jpeg_size) {
             size_t chunk = jpeg_size - off;
             if (chunk > stg_size) chunk = stg_size;
+            t_mc = esp_timer_get_time();
             memcpy(stg, jpeg_data + off, chunk);
-            fwrite(stg, 1, chunk, f);
+            awf_memcpy_total_us += esp_timer_get_time() - t_mc;
+            size_t wr = chunk;
+            // Pad last chunk to even boundary
+            if (off + chunk >= jpeg_size && (jpeg_size & 1)) {
+                stg[wr] = 0;
+                wr++;
+            }
+            t_fw = esp_timer_get_time();
+            write(fd, stg, wr);
+            awf_write_total_us += esp_timer_get_time() - t_fw;
             off += chunk;
         }
+        awf_count++;
     } else {
-        fwrite(jpeg_data, 1, jpeg_size, f);
-    }
-
-    // Pad to even boundary
-    if (jpeg_size & 1) {
-        uint8_t z = 0;
-        fwrite(&z, 1, 1, f);
+        // Fallback: separate writes (slow path)
+        avi_write_4cc(fd, "00dc");
+        avi_write_u32(fd, jpeg_size);
+        write(fd, jpeg_data, jpeg_size);
+        if (jpeg_size & 1) {
+            uint8_t z = 0;
+            write(fd, &z, 1);
+        }
+        awf_count++;
     }
     return jpeg_size;
 }
 
-// Write an audio chunk to the AVI movi section
-static uint32_t avi_write_audio(FILE *f, const uint8_t *pcm_data, uint32_t pcm_size,
+// Write an audio chunk to the AVI movi section (same merged-header approach)
+static uint32_t avi_write_audio(int fd, const uint8_t *pcm_data, uint32_t pcm_size,
                                 uint8_t *stg, size_t stg_size)
 {
-    avi_write_4cc(f, "01wb");
-    avi_write_u32(f, pcm_size);
+    if (stg && stg_size > 8) {
+        stg[0] = '0'; stg[1] = '1'; stg[2] = 'w'; stg[3] = 'b';
+        stg[4] = pcm_size & 0xFF;
+        stg[5] = (pcm_size >> 8) & 0xFF;
+        stg[6] = (pcm_size >> 16) & 0xFF;
+        stg[7] = (pcm_size >> 24) & 0xFF;
 
-    if (stg && stg_size > 0) {
-        size_t off = 0;
+        size_t first_data = stg_size - 8;
+        if (first_data > pcm_size) first_data = pcm_size;
+        memcpy(stg + 8, pcm_data, first_data);
+        size_t first_total = 8 + first_data;
+        if (first_data == pcm_size && (pcm_size & 1)) {
+            stg[first_total] = 0;
+            first_total++;
+        }
+        write(fd, stg, first_total);
+
+        size_t off = first_data;
         while (off < pcm_size) {
             size_t chunk = pcm_size - off;
             if (chunk > stg_size) chunk = stg_size;
             memcpy(stg, pcm_data + off, chunk);
-            fwrite(stg, 1, chunk, f);
+            size_t wr = chunk;
+            if (off + chunk >= pcm_size && (pcm_size & 1)) {
+                stg[wr] = 0;
+                wr++;
+            }
+            write(fd, stg, wr);
             off += chunk;
         }
     } else {
-        fwrite(pcm_data, 1, pcm_size, f);
-    }
-
-    if (pcm_size & 1) {
-        uint8_t z = 0;
-        fwrite(&z, 1, 1, f);
+        avi_write_4cc(fd, "01wb");
+        avi_write_u32(fd, pcm_size);
+        write(fd, pcm_data, pcm_size);
+        if (pcm_size & 1) {
+            uint8_t z = 0;
+            write(fd, &z, 1);
+        }
     }
     return pcm_size;
 }
@@ -1472,179 +1537,128 @@ typedef struct {
 
 // Update AVI headers in-place during recording (makes file playable if interrupted)
 // Does NOT write idx1 — that's only at finalization
-static void avi_update_headers(FILE *f, uint32_t movi_start, uint32_t current_pos,
+static void avi_update_headers(int fd, uint32_t movi_start, uint32_t current_pos,
                                uint32_t total_video_frames, uint32_t total_audio_samples,
                                uint32_t fps)
 {
-    long saved_pos = ftell(f);
+    off_t saved_pos = lseek(fd, 0, SEEK_CUR);
     uint32_t movi_data_size = current_pos - movi_start; // movi_start is at 'movi' fourcc
 
     // Patch RIFF size (offset 4): covers everything up to current write pos
-    fseek(f, 4, SEEK_SET);
-    avi_write_u32(f, current_pos - 8);
+    lseek(fd, 4, SEEK_SET);
+    avi_write_u32(fd, current_pos - 8);
 
     // Patch avih dwMicroSecPerFrame (offset 32)
     uint32_t actual_us_per_frame = fps > 0 ? 1000000 / fps : 100000;
-    fseek(f, 32, SEEK_SET);
-    avi_write_u32(f, actual_us_per_frame);
+    lseek(fd, 32, SEEK_SET);
+    avi_write_u32(fd, actual_us_per_frame);
 
     // Patch avih dwTotalFrames (offset 48)
-    fseek(f, 48, SEEK_SET);
-    avi_write_u32(f, total_video_frames);
+    lseek(fd, 48, SEEK_SET);
+    avi_write_u32(fd, total_video_frames);
 
     // Patch video strh dwRate (offset 132)
-    fseek(f, 132, SEEK_SET);
-    avi_write_u32(f, fps);
+    lseek(fd, 132, SEEK_SET);
+    avi_write_u32(fd, fps);
 
     // Patch video strh dwLength (offset 140)
-    fseek(f, 140, SEEK_SET);
-    avi_write_u32(f, total_video_frames);
+    lseek(fd, 140, SEEK_SET);
+    avi_write_u32(fd, total_video_frames);
 
     // Patch audio strh dwLength (offset 264 — strh is before strf, so unaffected by strf size)
-    fseek(f, 264, SEEK_SET);
-    avi_write_u32(f, total_audio_samples);
+    lseek(fd, 264, SEEK_SET);
+    avi_write_u32(fd, total_audio_samples);
 
     // Patch movi LIST size (4 bytes before 'movi' fourcc)
-    fseek(f, movi_start - 4, SEEK_SET);
-    avi_write_u32(f, movi_data_size);
+    lseek(fd, movi_start - 4, SEEK_SET);
+    avi_write_u32(fd, movi_data_size);
 
     // Restore write position
-    fseek(f, saved_pos, SEEK_SET);
+    lseek(fd, saved_pos, SEEK_SET);
 }
 
 // Finalize AVI: update headers with actual frame count, write index
-static void avi_finalize(FILE *f, uint32_t movi_start, uint32_t total_video_frames,
+static void avi_finalize(int fd, uint32_t movi_start, uint32_t total_video_frames,
                          uint32_t total_audio_samples,
                          const idx1_entry_t *idx_entries, uint32_t idx_count,
                          uint32_t width, uint32_t height, uint32_t fps)
 {
-    uint32_t movi_end = ftell(f);
-    uint32_t movi_data_size = movi_end - movi_start; // movi_start is at 'movi' fourcc
+    uint32_t movi_end = lseek(fd, 0, SEEK_CUR);
+    uint32_t movi_data_size = movi_end - movi_start;
 
     // Write idx1 index (video + audio entries)
-    avi_write_4cc(f, "idx1");
-    avi_write_u32(f, idx_count * 16);
+    avi_write_4cc(fd, "idx1");
+    avi_write_u32(fd, idx_count * 16);
     for (uint32_t i = 0; i < idx_count; i++) {
-        fwrite(idx_entries[i].fourcc, 1, 4, f);
-        avi_write_u32(f, idx_entries[i].flags);
-        avi_write_u32(f, idx_entries[i].offset);
-        avi_write_u32(f, idx_entries[i].size);
+        write(fd, idx_entries[i].fourcc, 4);
+        avi_write_u32(fd, idx_entries[i].flags);
+        avi_write_u32(fd, idx_entries[i].offset);
+        avi_write_u32(fd, idx_entries[i].size);
     }
 
-    uint32_t file_end = ftell(f);
+    uint32_t file_end = lseek(fd, 0, SEEK_CUR);
 
     // Patch RIFF size (offset 4)
-    fseek(f, 4, SEEK_SET);
-    avi_write_u32(f, file_end - 8);
+    lseek(fd, 4, SEEK_SET);
+    avi_write_u32(fd, file_end - 8);
 
     // Patch avih dwMicroSecPerFrame (offset 32) with actual FPS
     uint32_t actual_us_per_frame = fps > 0 ? 1000000 / fps : 100000;
-    fseek(f, 32, SEEK_SET);
-    avi_write_u32(f, actual_us_per_frame);
+    lseek(fd, 32, SEEK_SET);
+    avi_write_u32(fd, actual_us_per_frame);
 
     // Patch avih dwTotalFrames (offset 48)
-    fseek(f, 48, SEEK_SET);
-    avi_write_u32(f, total_video_frames);
+    lseek(fd, 48, SEEK_SET);
+    avi_write_u32(fd, total_video_frames);
 
     // Patch video strh dwRate (offset 132) with actual FPS
-    fseek(f, 132, SEEK_SET);
-    avi_write_u32(f, fps);
+    lseek(fd, 132, SEEK_SET);
+    avi_write_u32(fd, fps);
 
     // Patch video strh dwLength (offset 140)
-    fseek(f, 140, SEEK_SET);
-    avi_write_u32(f, total_video_frames);
+    lseek(fd, 140, SEEK_SET);
+    avi_write_u32(fd, total_video_frames);
 
-    // Patch audio strh dwLength (offset 264 — strh is before strf, so unaffected by strf size)
-    fseek(f, 264, SEEK_SET);
-    avi_write_u32(f, total_audio_samples);
+    // Patch audio strh dwLength (offset 264)
+    lseek(fd, 264, SEEK_SET);
+    avi_write_u32(fd, total_audio_samples);
 
     // Patch avih dwFlags (offset 44): AVIF_HASINDEX | AVIF_ISINTERLEAVED
-    fseek(f, 44, SEEK_SET);
-    avi_write_u32(f, 0x110);
+    lseek(fd, 44, SEEK_SET);
+    avi_write_u32(fd, 0x110);
 
     // Patch movi LIST size (4 bytes before 'movi' fourcc)
-    fseek(f, movi_start - 4, SEEK_SET);
-    avi_write_u32(f, movi_data_size);
+    lseek(fd, movi_start - 4, SEEK_SET);
+    avi_write_u32(fd, movi_data_size);
 
-    fseek(f, file_end, SEEK_SET);
+    lseek(fd, file_end, SEEK_SET);
 }
 
 // ============================================================================
-// SD CARD SPEED BENCHMARK
-// Tests raw SDMMC vs VFS/FAT write throughput to identify bottleneck
 // ============================================================================
-
-static void sd_speed_benchmark(void)
+// SDMMC DMA TUNING
+// Configures hardware registers for maximum SD card DMA throughput.
+// Must be called AFTER sd card is mounted (SDMMC host is initialized).
+// ============================================================================
+static void sdmmc_dma_tuning(void)
 {
-    ESP_LOGI(TAG, "=== SD SPEED BENCHMARK ===");
+    // SDMMC FIFOTH: Set DMA burst to 32B (default is 1B)
+    uint32_t fifoth = 0;
+    fifoth |= (128 & SDHOST_TX_WMARK_V) << SDHOST_TX_WMARK_S;
+    fifoth |= (127 & SDHOST_RX_WMARK_V) << SDHOST_RX_WMARK_S;
+    fifoth |= (4 & SDHOST_DMA_MULTIPLE_TRANSACTION_SIZE_V) << SDHOST_DMA_MULTIPLE_TRANSACTION_SIZE_S;
+    REG_WRITE(SDHOST_FIFOTH_REG, fifoth);
 
-    const size_t BUF_SZ = 64 * 1024;   // 64KB per write
-    const int N = 32;                   // 32 × 64KB = 2MB total
+    // TCM arbiter: Boost DMA weight to max (default 2/7)
+    uint32_t wrr_cfg = REG_READ(HP_SYSTEM_TCM_RAM_WRR_CONFIG_REG);
+    wrr_cfg &= ~(HP_SYSTEM_REG_TCM_RAM_DMA_WT_V << HP_SYSTEM_REG_TCM_RAM_DMA_WT_S);
+    wrr_cfg |= (7 << HP_SYSTEM_REG_TCM_RAM_DMA_WT_S);
+    REG_WRITE(HP_SYSTEM_TCM_RAM_WRR_CONFIG_REG, wrr_cfg);
 
-    // Try DMA-capable internal memory first, fall back to PSRAM
-    uint8_t *buf = heap_caps_aligned_alloc(64, BUF_SZ,
-                       MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    bool is_internal = (buf != NULL);
-    if (!buf) {
-        buf = heap_caps_aligned_alloc(64, BUF_SZ,
-                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-    if (!buf) { ESP_LOGE(TAG, "BENCH: alloc failed"); return; }
-    memset(buf, 0x55, BUF_SZ);
-
-    // Test 1: Raw SDMMC sector write (bypasses VFS/FAT entirely)
-    size_t sects_per = BUF_SZ / 512;
-    size_t start_sect = sd_card->csd.capacity - (N * sects_per + 1024);
-    int64_t t0 = esp_timer_get_time();
-    for (int i = 0; i < N; i++) {
-        esp_err_t err = sdmmc_write_sectors(sd_card, buf,
-                            start_sect + i * sects_per, sects_per);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Raw write err: %s", esp_err_to_name(err));
-            break;
-        }
-    }
-    int64_t raw_us = esp_timer_get_time() - t0;
-
-    // Test 2: VFS/FAT write (growing file — current approach)
-    int64_t vfs_us = 0;
-    FILE *f = fopen("/sdcard/vid/_bench.bin", "wb");
-    if (f) {
-        t0 = esp_timer_get_time();
-        for (int i = 0; i < N; i++) fwrite(buf, 1, BUF_SZ, f);
-        fflush(f);
-        vfs_us = esp_timer_get_time() - t0;
-        fclose(f);
-    }
-
-    // Test 3: VFS/FAT write to pre-allocated file (overwrite, no cluster alloc)
-    int64_t prealloc_us = 0;
-    f = fopen("/sdcard/vid/_bench.bin", "r+b");
-    if (f) {
-        fseek(f, 0, SEEK_SET);
-        t0 = esp_timer_get_time();
-        for (int i = 0; i < N; i++) fwrite(buf, 1, BUF_SZ, f);
-        fflush(f);
-        prealloc_us = esp_timer_get_time() - t0;
-        fclose(f);
-    }
-    remove("/sdcard/vid/_bench.bin");
-
-    float total_kb = N * BUF_SZ / 1024.0f;
-    ESP_LOGI(TAG, "  %dKB %s buf, %d writes = %.0f KB total",
-             (int)(BUF_SZ/1024), is_internal ? "INTERNAL" : "PSRAM",
-             N, total_kb);
-    ESP_LOGI(TAG, "  Raw SDMMC:         %.0f KB/s (%lld ms)",
-             total_kb / (raw_us / 1e6f), raw_us / 1000);
-    ESP_LOGI(TAG, "  VFS/FAT new file:  %.0f KB/s (%lld ms)",
-             vfs_us > 0 ? total_kb / (vfs_us / 1e6f) : 0, vfs_us / 1000);
-    ESP_LOGI(TAG, "  VFS/FAT pre-alloc: %.0f KB/s (%lld ms)",
-             prealloc_us > 0 ? total_kb / (prealloc_us / 1e6f) : 0,
-             prealloc_us / 1000);
-
-    free(buf);
-    ESP_LOGI(TAG, "=== BENCHMARK DONE ===");
+    ESP_LOGI(TAG, "SDMMC DMA tuning applied (burst=32B, DMA_WT=7)");
 }
+
+
 
 // ============================================================================
 // SD WRITE TASK - runs on Core 1
@@ -1690,8 +1704,8 @@ static void sd_write_task(void *arg)
         if (stat(filename, &st) != 0) break;  // file doesn't exist, use this name
     }
 
-    FILE *f = fopen(filename, "wb");
-    if (!f) {
+    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
         ESP_LOGE(TAG, "Failed to create %s: %s", filename, strerror(errno));
         free(idx_entries);
         free(audio_drain_buf);
@@ -1703,42 +1717,37 @@ static void sd_write_task(void *arg)
     // Pre-allocate file to expected max size.
     // This allocates FAT clusters upfront so writes during recording
     // don't trigger cluster allocation (the main FAT overhead).
-    // Cap at 2GB (fseek uses long which is 32-bit on ESP32-P4, and FAT32 max is 4GB)
+    // Cap at 2GB (FAT32 max is 4GB, but stay safe)
     size_t prealloc_bytes = (size_t)RECORD_DURATION_SEC * (H264_BITRATE / 8) * 2; // 2x bitrate headroom
     if (prealloc_bytes > 2000000000UL) prealloc_bytes = 2000000000UL;
     int64_t t_pa = esp_timer_get_time();
-    if (fseek(f, (long)prealloc_bytes, SEEK_SET) == 0) {
-        fputc(0, f);
-        fflush(f);
-        fsync(fileno(f));  // sync FAT directory entry so file isn't 0KB if we crash
-        fseek(f, 0, SEEK_SET);
+    if (lseek(fd, (off_t)prealloc_bytes, SEEK_SET) >= 0) {
+        uint8_t zero = 0;
+        write(fd, &zero, 1);
+        fsync(fd);
+        lseek(fd, 0, SEEK_SET);
         ESP_LOGI(TAG, "Pre-allocated %zuMB in %lldms",
                  prealloc_bytes / (1024 * 1024),
                  (esp_timer_get_time() - t_pa) / 1000);
     }
 
-    // CRITICAL: setvbuf must be in INTERNAL DMA memory AND >= max frame size.
-    // This handles small writes (AVI headers, 4-8 byte chunks) efficiently.
-    // Large JPEG frame writes use a separate staging buffer (see avi_write_frame).
-    size_t buf_size = 128 * 1024;
-    void *file_buf = heap_caps_aligned_alloc(128, buf_size,
-                         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!file_buf) {
-        buf_size = 64 * 1024;
-        file_buf = heap_caps_aligned_alloc(128, buf_size,
-                       MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    }
-    if (file_buf) {
-        setvbuf(f, file_buf, _IOFBF, buf_size);
-        ESP_LOGI(TAG, "File buffer: %zuKB INTERNAL DMA", buf_size / 1024);
-    }
-
-    // Staging buffer for JPEG frame writes: copies PSRAM→internal before fwrite.
-    // newlib fwrite bypasses setvbuf for large writes, sending directly from PSRAM
-    // to SDMMC DMA → 16x slower. This staging buffer prevents that.
-    size_t stg_size = 32 * 1024;
+    // Staging buffer: PSRAM->internal bounce for POSIX write().
+    // Merges AVI header + frame data so each write() is from internal DMA RAM.
+    // With merged header, a 64KB staging buffer fits a full ~33KB H.264 frame
+    // in one write() call. Falls back to 32KB (2 write() calls per frame).
+    size_t stg_size = 64 * 1024;
     uint8_t *stg_buf = heap_caps_aligned_alloc(128, stg_size,
                            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!stg_buf) {
+        stg_size = 32 * 1024;
+        stg_buf = heap_caps_aligned_alloc(128, stg_size,
+                       MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    }
+    if (!stg_buf) {
+        stg_size = 16 * 1024;
+        stg_buf = heap_caps_aligned_alloc(128, stg_size,
+                       MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    }
     if (!stg_buf) {
         ESP_LOGW(TAG, "No staging buffer - large writes will be slow");
         stg_size = 0;
@@ -1747,9 +1756,12 @@ static void sd_write_task(void *arg)
     }
 
     ESP_LOGI(TAG, "AVI writer started: %s", filename);
+    ESP_LOGI(TAG, "Internal DMA free: %lu bytes, PSRAM free: %lu bytes",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // Write AVI header (uses encoder dimensions, not sensor dimensions)
-    uint32_t movi_start = avi_write_header(f, recorder->enc_width, recorder->enc_height, AVI_FPS);
+    uint32_t movi_start = avi_write_header(fd, recorder->enc_width, recorder->enc_height, AVI_FPS);
     uint32_t current_pos = movi_start + 4; // first data byte is 4 bytes after 'movi' fourcc
     ESP_LOGI(TAG, "AVI header written");
 
@@ -1770,7 +1782,7 @@ static void sd_write_task(void *arg)
                         idx_entries[idx_count].size = audio_bytes;
                         idx_count++;
                     }
-                    avi_write_audio(f, audio_drain_buf, audio_bytes, stg_buf, stg_size);
+                    avi_write_audio(fd, audio_drain_buf, audio_bytes, stg_buf, stg_size);
                     uint32_t audio_samples = audio_bytes / (AUDIO_BITS / 8 * AUDIO_CHANNELS);
                     total_audio_samples += audio_samples;
                     current_pos += 8 + audio_bytes + (audio_bytes & 1 ? 1 : 0);
@@ -1787,6 +1799,7 @@ static void sd_write_task(void *arg)
         }
 
         // Write video frame
+        int64_t t_wr_start = esp_timer_get_time();
         if (idx_count < max_idx) {
             memcpy(idx_entries[idx_count].fourcc, "00dc", 4);
             idx_entries[idx_count].flags = msg.is_keyframe ? 0x10 : 0;
@@ -1794,9 +1807,8 @@ static void sd_write_task(void *arg)
             idx_entries[idx_count].size = msg.jpeg_size;
             idx_count++;
         }
-        int64_t t0 = esp_timer_get_time();
-        avi_write_frame(f, msg.jpeg_data, msg.jpeg_size, stg_buf, stg_size);
-        int64_t t_write = esp_timer_get_time() - t0;
+        avi_write_frame(fd, msg.jpeg_data, msg.jpeg_size, stg_buf, stg_size);
+        int64_t t_vidwr_us = esp_timer_get_time() - t_wr_start;
 
         // Release staging buffer back to capture task for reuse
         xSemaphoreGive(jpeg_buf_sem);
@@ -1806,6 +1818,8 @@ static void sd_write_task(void *arg)
         total_written = written;
 
         // Drain audio accumulated since last video frame
+        int64_t t_aud_start = esp_timer_get_time();
+        int64_t t_audwr_us = 0;
         if (audio_ring && idx_count < max_idx) {
             uint32_t audio_bytes = audio_drain(audio_drain_buf, audio_chunk_max);
             if (audio_bytes > 0) {
@@ -1816,29 +1830,51 @@ static void sd_write_task(void *arg)
                     idx_entries[idx_count].size = audio_bytes;
                     idx_count++;
                 }
-                avi_write_audio(f, audio_drain_buf, audio_bytes, stg_buf, stg_size);
+                avi_write_audio(fd, audio_drain_buf, audio_bytes, stg_buf, stg_size);
                 uint32_t audio_samples = audio_bytes / (AUDIO_BITS / 8 * AUDIO_CHANNELS);
                 total_audio_samples += audio_samples;
                 current_pos += 8 + audio_bytes + (audio_bytes & 1 ? 1 : 0);
                 audio_chunks_written++;
             }
         }
+        t_audwr_us = esp_timer_get_time() - t_aud_start;
 
-        if (written % 50 == 0) {
-            ESP_LOGI(TAG, "Frame %d: h264=%luKB, write=%lldms, audio_chunks=%d",
-                     written, (unsigned long)msg.jpeg_size / 1024,
-                     t_write / 1000, audio_chunks_written);
+        // Accumulate write task timing
+        static int64_t wt_vid_total = 0, wt_aud_total = 0, wt_sync_total = 0;
+        static int wt_count = 0;
+        wt_vid_total += t_vidwr_us;
+        wt_aud_total += t_audwr_us;
+        wt_count++;
+
+        if (written % 150 == 0) {
+            int64_t t_sync_start = esp_timer_get_time();
+
             float elapsed = (esp_timer_get_time() - start_us) / 1e6f;
             uint32_t cur_fps = elapsed > 0 ? (uint32_t)(written / elapsed + 0.5f) : AVI_FPS;
             if (cur_fps < 1) cur_fps = 1;
+
+            // Update AVI headers in-place so file is playable if recording is interrupted
+            avi_update_headers(fd, movi_start, current_pos, written, total_audio_samples, cur_fps);
+            fsync(fd);  // force to SD card so file survives power loss
+
+            int64_t t_sync_us = esp_timer_get_time() - t_sync_start;
+            wt_sync_total += t_sync_us;
+
+            ESP_LOGI(TAG, "WR_TIMING avg(ms): vid=%.1f aud=%.1f sync=%.1f [%d frames] last_sync=%lldms",
+                     wt_vid_total / 1000.0f / wt_count,
+                     wt_aud_total / 1000.0f / wt_count,
+                     wt_sync_total / 1000.0f / (written / 150),
+                     wt_count, t_sync_us / 1000);
+            if (awf_count > 0) {
+                ESP_LOGI(TAG, "  AWF breakdown: memcpy=%.1f write=%.1f (ms avg, %d calls)",
+                         awf_memcpy_total_us / 1000.0f / awf_count,
+                         awf_write_total_us / 1000.0f / awf_count,
+                         awf_count);
+            }
             ESP_LOGI(TAG, "Written %d frames (%.1f FPS avg), captured=%d, dropped=%d, audio=%d chunks",
                      written, written / elapsed, total_captured, total_dropped, audio_chunks_written);
 
 
-            // Update AVI headers in-place so file is playable if recording is interrupted
-            avi_update_headers(f, movi_start, current_pos, written, total_audio_samples, cur_fps);
-            fflush(f);
-            fsync(fileno(f));  // force to SD card so file survives power loss
         }
     }
 
@@ -1851,7 +1887,7 @@ static void sd_write_task(void *arg)
             idx_entries[idx_count].offset = current_pos - movi_start;
             idx_entries[idx_count].size = audio_bytes;
             idx_count++;
-            avi_write_audio(f, audio_drain_buf, audio_bytes, stg_buf, stg_size);
+            avi_write_audio(fd, audio_drain_buf, audio_bytes, stg_buf, stg_size);
             uint32_t audio_samples = audio_bytes / (AUDIO_BITS / 8 * AUDIO_CHANNELS);
             total_audio_samples += audio_samples;
             current_pos += 8 + audio_bytes + (audio_bytes & 1 ? 1 : 0);
@@ -1865,27 +1901,25 @@ static void sd_write_task(void *arg)
     if (actual_fps < 1) actual_fps = 1;
     ESP_LOGI(TAG, "Finalizing AVI: %d video frames, %d audio chunks (%lu samples), actual %lu FPS",
              written, audio_chunks_written, (unsigned long)total_audio_samples, (unsigned long)actual_fps);
-    avi_finalize(f, movi_start, written, total_audio_samples,
+    avi_finalize(fd, movi_start, written, total_audio_samples,
                  idx_entries, idx_count,
                  recorder->enc_width, recorder->enc_height, actual_fps);
-    long final_size = ftell(f);
-    ESP_LOGI(TAG, "AVI data size: %ld bytes (%.1f MB)", final_size, final_size / (1024.0f * 1024.0f));
-    fflush(f);
-    fsync(fileno(f));  // force data to SD card before truncate
+    off_t final_size = lseek(fd, 0, SEEK_CUR);
+    ESP_LOGI(TAG, "AVI data size: %ld bytes (%.1f MB)", (long)final_size, final_size / (1024.0f * 1024.0f));
+    fsync(fd);
     // Truncate pre-allocated file to actual data size
-    if (ftruncate(fileno(f), final_size) != 0) {
+    if (ftruncate(fd, final_size) != 0) {
         ESP_LOGE(TAG, "ftruncate failed: %s", strerror(errno));
     }
-    fsync(fileno(f));  // sync the truncated size
+    fsync(fd);  // sync the truncated size
     ESP_LOGI(TAG, "AVI finalized, closing file");
-    fclose(f);
+    close(fd);
 
     // Verify file size on disk
     struct stat st;
     if (stat(filename, &st) == 0) {
         ESP_LOGI(TAG, "File on disk: %ld bytes", (long)st.st_size);
     }
-    if (file_buf) free(file_buf);
     if (stg_buf) free(stg_buf);
     free(idx_entries);
     free(audio_drain_buf);
@@ -1935,11 +1969,14 @@ static void capture_task(void *arg)
     int64_t end_us = start_us + (int64_t)RECORD_DURATION_SEC * 1000000LL;
     int captured = 0;
     int dropped = 0;
-    int skipped = 0;
+    int pre_enc_drops = 0;    // frames skipped BEFORE encoding (backpressure)
+    int post_enc_drops = 0;   // frames dropped AFTER encoding (reference break!)
     int consecutive_dqbuf_fails = 0;
-    int64_t encode_interval_us = 1000000 / AVI_FPS;  // min time between encodes
-    int64_t last_encode_us = 0;
     int64_t last_csi_check_us = 0;
+
+    // Per-stage timing accumulators (microseconds)
+    int64_t t_dqbuf_total = 0, t_ppa_total = 0, t_enc_total = 0, t_copy_total = 0, t_sem_total = 0;
+    int timing_count = 0;
 
     ESP_LOGI(TAG, "Capture: starting %d second recording", RECORD_DURATION_SEC);
     capture_running = true;
@@ -1978,6 +2015,7 @@ static void capture_task(void *arg)
         }
 
         // DQBUF from camera - blocks until frame ready
+        int64_t t_stage = esp_timer_get_time();
         memset(&cap_buf, 0, sizeof(cap_buf));
         cap_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         cap_buf.memory = V4L2_MEMORY_MMAP;
@@ -1997,23 +2035,35 @@ static void capture_task(void *arg)
 
         captured++;
         total_captured = captured;
+        int64_t t_dqbuf_us = esp_timer_get_time() - t_stage;
 
-        // Rate-limit encoding to AVI_FPS — skip frames between encodes.
-        // This prevents H.264 P-frame reference breaks from write-side drops.
-        int64_t now = esp_timer_get_time();
-        if (last_encode_us > 0 && (now - last_encode_us) < encode_interval_us) {
+        // --- BACKPRESSURE CHECK: skip encoding if staging buffers are exhausted ---
+        // Dropping BEFORE encode preserves H.264 reference chain integrity.
+        // Dropping AFTER encode causes P-frame corruption (macroblock smearing).
+        if (uxSemaphoreGetCount(jpeg_buf_sem) == 0) {
             ioctl(recorder->cap_fd, VIDIOC_QBUF, &cap_buf);
-            skipped++;
+            pre_enc_drops++;
+            dropped++;
+            total_dropped = dropped;
+            if (pre_enc_drops % 10 == 1) {
+                ESP_LOGW(TAG, "Backpressure: skipped frame %d before encoding (pre_drops=%d)",
+                         captured, pre_enc_drops);
+            }
             continue;
         }
-        last_encode_us = now;
+
+        // NOTE: V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME is not supported by esp_video H.264 driver.
+        // GOP=15 ensures natural IDR frames every 0.5s to limit P-frame corruption duration.
+        // If the driver adds support in the future, uncomment the force_idr block above.
 
         // Feed raw frame to H.264 M2M encoder via USERPTR
         // If PPA scaling is active, scale 2304x1296 -> 1280x720 first
         uint8_t *enc_input_buf;
         uint32_t enc_input_len;
 
+        int64_t t_ppa_us = 0;
         if (ppa_srm_handle && ppa_scaled_buf) {
+            int64_t t_ppa_start = esp_timer_get_time();
             ppa_srm_oper_config_t srm = {
                 .in = {
                     .buffer = recorder->cap_buffer[cap_buf.index],
@@ -2051,12 +2101,14 @@ static void capture_task(void *arg)
             }
             enc_input_buf = ppa_scaled_buf;
             enc_input_len = ppa_scaled_buf_size;
+            t_ppa_us = esp_timer_get_time() - t_ppa_start;
         } else {
             enc_input_buf = recorder->cap_buffer[cap_buf.index];
             enc_input_len = cap_buf.bytesused;
         }
 
         // --- H.264 encode ---
+        int64_t t_enc_start = esp_timer_get_time();
         memset(&m2m_out_buf, 0, sizeof(m2m_out_buf));
         m2m_out_buf.index = 0;
         m2m_out_buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -2079,7 +2131,7 @@ static void capture_task(void *arg)
             ioctl(recorder->cap_fd, VIDIOC_QBUF, &cap_buf);
             continue;
         }
-        
+        int64_t t_enc_us = esp_timer_get_time() - t_enc_start;
 
         // --- Gap: camera QBUF + M2M output DQBUF ---
         // Release camera buffer ASAP so ISR has buffers
@@ -2094,9 +2146,13 @@ static void capture_task(void *arg)
 
         if (jpeg_size > 0 && jpeg_size <= JPEG_BUF_SIZE) {
             // Wait for a free staging buffer (blocks if write task is behind)
+            int64_t t_sem_start = esp_timer_get_time();
             if (xSemaphoreTake(jpeg_buf_sem, pdMS_TO_TICKS(200)) == pdTRUE) {
+                int64_t t_sem_us = esp_timer_get_time() - t_sem_start;
                 int buf_idx = recorder->jpeg_buf_write_idx;
+                int64_t t_copy_start = esp_timer_get_time();
                 memcpy(recorder->jpeg_out_buf[buf_idx], recorder->m2m_cap_buffers[m2m_idx], jpeg_size);
+                int64_t t_copy_us = esp_timer_get_time() - t_copy_start;
                 recorder->jpeg_buf_write_idx = (buf_idx + 1) % NUM_JPEG_BUFS;
 
                 // Re-queue M2M buffer immediately (don't wait for SD write)
@@ -2113,14 +2169,36 @@ static void capture_task(void *arg)
                 };
                 xQueueSend(write_queue, &msg, portMAX_DELAY);
 
+                // Accumulate timing stats
+                t_dqbuf_total += t_dqbuf_us;
+                t_ppa_total += t_ppa_us;
+                t_enc_total += t_enc_us;
+                t_copy_total += t_copy_us;
+                t_sem_total += t_sem_us;
+                timing_count++;
+                if (timing_count % 50 == 0) {
+                    ESP_LOGI(TAG, "TIMING avg(ms): dqbuf=%.1f ppa=%.1f h264=%.1f sem=%.1f copy=%.1f total=%.1f [%d frames]",
+                             t_dqbuf_total / 1000.0f / timing_count,
+                             t_ppa_total / 1000.0f / timing_count,
+                             t_enc_total / 1000.0f / timing_count,
+                             t_sem_total / 1000.0f / timing_count,
+                             t_copy_total / 1000.0f / timing_count,
+                             (t_dqbuf_total + t_ppa_total + t_enc_total + t_sem_total + t_copy_total) / 1000.0f / timing_count,
+                             timing_count);
+                }
+
             } else {
-                // All staging buffers full — drop frame
+                // All staging buffers full AFTER encoding — this breaks H.264 references!
+                // Should rarely happen if pre-encode backpressure is working.
                 m2m_cap_buf.index = m2m_idx;
                 m2m_cap_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
                 m2m_cap_buf.memory = V4L2_MEMORY_MMAP;
                 ioctl(recorder->m2m_fd, VIDIOC_QBUF, &m2m_cap_buf);
+                post_enc_drops++;
                 dropped++;
                 total_dropped = dropped;
+                ESP_LOGW(TAG, "POST-ENCODE drop #%d at frame %d — H.264 reference chain broken!",
+                         post_enc_drops, captured);
             }
         } else {
             // Empty or oversized frame — re-queue M2M buffer
@@ -2135,8 +2213,9 @@ static void capture_task(void *arg)
     recording = false;
 
     float elapsed = (esp_timer_get_time() - start_us) / 1e6f;
-    ESP_LOGI(TAG, "Capture done: %d frames in %.1fs (%.1f FPS), skipped=%d, dropped=%d",
-             captured, elapsed, elapsed > 0 ? captured / elapsed : 0, skipped, dropped);
+    ESP_LOGI(TAG, "Capture done: %d frames in %.1fs (%.1f FPS), dropped=%d (pre_enc=%d, post_enc=%d)",
+             captured, elapsed, elapsed > 0 ? captured / elapsed : 0,
+             dropped, pre_enc_drops, post_enc_drops);
 
     capture_task_handle = NULL;
     vTaskDelete(NULL);
@@ -2635,7 +2714,7 @@ static void start_recording(void)
     // Priority 14: highest of our tasks — SD writes must not be starved by encode/ISP
     // Stack 12KB: FAT/VFS/SDMMC stack frames are deep (fsync, cluster chain walks)
     write_task_ready = xSemaphoreCreateBinary();
-    xTaskCreatePinnedToCore(sd_write_task, "sd_wr", 12288, NULL, 14, &sd_write_task_handle, 1);
+    xTaskCreatePinnedToCore(sd_write_task, "sd_wr", 16384, NULL, 14, &sd_write_task_handle, 1);
     if (xSemaphoreTake(write_task_ready, pdMS_TO_TICKS(30000)) != pdTRUE) {
         ESP_LOGE(TAG, "Write task init timeout");
         recording = false;
@@ -2830,8 +2909,10 @@ void app_main(void)
             ESP_LOGE(TAG, "SD write test: FAILED");
         }
 
-        // Run speed benchmark to identify write bottleneck
-        sd_speed_benchmark();
+        // Tune SDMMC DMA for maximum throughput
+        sdmmc_dma_tuning();
+
+
     } else {
         ESP_LOGW(TAG, "No SD card - will capture without recording");
     }

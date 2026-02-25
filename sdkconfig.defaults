@@ -81,6 +81,10 @@ CONFIG_FATFS_WRITE_BACK_CACHE=y
 # ============================================================================
 # Memory / Performance
 # ============================================================================
+# CPU frequency: 360 MHz (max for ESP32-P4 in ESP-IDF 5.4.1)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=360
+
 # Larger main task stack for complex init
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
