@@ -1197,11 +1197,20 @@ static esp_err_t init_isp_color(void)
         ESP_LOGI(TAG, "ISP CCM set (6500K daylight)");
     }
 
-    // --- 2. Gamma Correction — linear (disabled) ---
-    // No gamma curve — let sensor raw tonal response come through.
-    esp_video_isp_gamma_t gamma = {
-        .enable = false,
-    };
+    // --- 2. Gamma Correction — 0.55 power curve to reduce haze ---
+    // IPA will override per-frame from JSON gamma_param table.
+    esp_video_isp_gamma_t gamma = { .enable = true };
+    {
+        // 16-point gamma curve with power-of-2 X spacing: 0,16,32,...,240
+        const float g = 0.55f;
+        for (int i = 0; i < 16; i++) {
+            uint8_t x = (uint8_t)(i * 16);
+            float norm = (float)x / 255.0f;
+            uint8_t y = (uint8_t)(powf(norm, g) * 255.0f + 0.5f);
+            gamma.points[i].x = x;
+            gamma.points[i].y = y;
+        }
+    }
 
     memset(&ctrl, 0, sizeof(ctrl));
     memset(&ctrls, 0, sizeof(ctrls));
@@ -1215,7 +1224,7 @@ static esp_err_t init_isp_color(void)
     if (ioctl(isp_fd, VIDIOC_S_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG, "Failed to set ISP gamma: %s", strerror(errno));
     } else {
-        ESP_LOGI(TAG, "ISP gamma disabled (linear)");
+        ESP_LOGI(TAG, "ISP gamma enabled (power=0.55)");
     }
 
     // --- 3. Demosaic ---
@@ -1240,10 +1249,15 @@ static esp_err_t init_isp_color(void)
         ESP_LOGI(TAG, "ISP demosaic enabled (gradient_ratio=1.0)");
     }
 
-    // --- 4. Sharpening — disabled ---
-    // No artificial sharpening — let sensor native detail come through.
+    // --- 4. Sharpening — moderate edge enhancement ---
+    // IPA will override per-frame from JSON sharpen table.
     esp_video_isp_sharpen_t sharpen = {
-        .enable = false,
+        .enable = true,
+        .h_thresh = 80,
+        .l_thresh = 20,
+        .h_coeff = 0.55f,
+        .m_coeff = 0.75f,
+        .matrix = {{1,2,1},{2,2,2},{1,2,1}},
     };
 
     memset(&ctrl, 0, sizeof(ctrl));
@@ -1258,7 +1272,7 @@ static esp_err_t init_isp_color(void)
     if (ioctl(isp_fd, VIDIOC_S_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG, "Failed to set ISP sharpen: %s", strerror(errno));
     } else {
-        ESP_LOGI(TAG, "ISP sharpen enabled (h_thresh=40 l_thresh=10)");
+        ESP_LOGI(TAG, "ISP sharpen enabled (h_thresh=80 l_thresh=20)");
     }
 
     close(isp_fd);
